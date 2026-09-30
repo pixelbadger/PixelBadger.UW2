@@ -29,8 +29,8 @@ roadmap are in [CLAUDE.md](CLAUDE.md); data formats in [docs/FORMATS.md](docs/FO
 
 ## CI/CD
 - **Pull requests into `main`** run [CI](.github/workflows/ci.yml): typecheck, tests, build.
-- **Merges to `main`** run [Deploy](.github/workflows/deploy.yml): CI again, then publish to GitHub Pages. The
-  **data-tests** gate (the real-data integration suite) is currently disabled; see the comment in the workflow.
+- **Merges to `main`** run [Deploy](.github/workflows/deploy.yml): CI again, then the **data-tests** gate (the
+  real-data integration suite against your disc), then publish to GitHub Pages. No disc source, no deploy.
 
 One-time repository settings (an admin must do these; workflows can't):
 1. Settings → Pages → Source: **GitHub Actions**.
@@ -38,7 +38,7 @@ One-time repository settings (an admin must do these; workflows can't):
    require status check **build-test** to pass, block force pushes.
 3. Settings → Secrets and variables → Actions: secret **`UW2_DATA_URL`**, a private download link to your disc
    image (.iso/.bin) or a .zip holding `UW2/`. Optionally the variable **`UW2_DATA_SHA256`** (its checksum) to pin it;
-   the download is cached under that key. (Only needed once the data-tests gate is re-enabled.)
+   the download is cached under that key. Deploys are blocked until the secret is set.
 
 ## Licence
 MIT (code). Fonts: Alegreya / Alegreya SC (SIL OFL), bundled. Ultima Underworld II data is © its owners and is not

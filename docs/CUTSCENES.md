@@ -20,6 +20,10 @@ Not built yet: music (25, needs XMI playback), the small-window cutscenes (0x100
 screen after the ending (the main menu opens instead), the original's sleep messages and what sleep does besides
 dreaming. Still UNVERIFIED: quest 143 as the trigger (no conversation was seen setting it) and the dream rules.
 
+A quirk of the disc's data: CS040.N00 (cutscene 32) opens file "40", which (octal-encoded like every other open-file)
+names CS050.N01, which the disc does not have; it evidently meant its own CS040.N01, already on screen, so the failed
+open changes nothing you see. The player reports it; the real-data test expects exactly that report.
+
 Browsers may refuse sound until the page has had a click or key press; the pictures and subtitles play regardless.
 Data stored before cutscenes were extracted lacks `CUTS/`: the game says to choose Forget data and the disc again.
 

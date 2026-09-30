@@ -12,6 +12,13 @@ import { disc, needDisc } from './disc';
 /** The catalogue (docs/CUTSCENES.md). 3, 8, 11-23 and 31 are not used by UW2. */
 const CATALOGUE = [0, 1, 2, 4, 5, 6, 7, 9, 10, 24, 25, 26, 27, 28, 29, 30, 32];
 const EVERY_4TH = 'CS012.N01';
+/**
+ * Problems the disc's own data causes, by cutscene. CS040.N00 (32) says open-file 40 / 1, which names CS050.N01 (the
+ * number is octal-encoded, as for every other open-file, and UnderworldGodot reads it the same way); the disc has no
+ * such file. The script evidently meant its own CS040.N01, which is already showing: the original keeps showing the
+ * current file when an open fails, and so does the player, so the picture is unaffected.
+ */
+const KNOWN_PROBLEMS: Record<number, string[]> = { 32: ['missing CUTS/CS050.N01'] };
 
 describe.runIf(needDisc())('cutscenes on the real disc', () => {
   const files = disc() ?? {}; // (the body is still collected when skipped)
@@ -67,7 +74,8 @@ describe.runIf(needDisc())('cutscenes on the real disc', () => {
   });
 
   it('the texts the research names are where it says', () => {
-    const at = (b: number) => (strings.get(b) ?? []).join('\n').toLowerCase();
+    // the disc wraps subtitles over several lines: compare with whitespace collapsed
+    const at = (b: number) => (strings.get(b) ?? []).join('\n').toLowerCase().replace(/\s+/g, ' ');
     expect(at(0xc00)).toContain('dear avatar');
     expect(at(0xc18)).toContain('i hear the beaches near cove are nice');
     expect(at(0xc20)).toContain('yes, british, hasten to thy vain struggle');
@@ -99,7 +107,7 @@ describe.runIf(needDisc())('cutscenes on the real disc', () => {
     for (let k = 0; k < 20 * 60 * 10 && !p.done && !p.held; k++) { p.update(0.1); if (p.subtitle) said.add(p.subtitle.text); }
     if (p.held) p.skip(); // "pause forever": the original waits for a key
     expect(p.done, `still playing after ${p.t.toFixed(0)} s`).toBe(true);
-    expect(p.problems).toEqual([]);
+    expect(p.problems).toEqual(KNOWN_PROBLEMS[n] ?? []);
     expect(p.t).toBeGreaterThan(1);
     expect(voiced).toBe(voices(n).length);
     const shown = script(n).filter(c => c.cmd === 0 || (c.cmd === 13 && s16(c.args[1]!) >= 0)).length;
