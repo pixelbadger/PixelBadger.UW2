@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Ultima Underworld II running on a web engine that reads the original game data in your browser.">
+<title>Ultima Underworld II · web engine</title>
+<script type="module" src="./src/main.ts"></script>
+</head>
+<body>
+<div id="loader"><div class="card">
+  <h1>Ultima Underworld II</h1>
+  <div class="sub">Labyrinth of Worlds, running on a web engine</div>
+  <p>Choose your <em>Ultima Underworld I &amp; II</em> disc image (.iso), or the files from its <code>UW2/DATA</code> folder. The game data is read here in your browser and kept on this device for next time; nothing is uploaded.</p>
+  <label class="pickbtn" tabindex="0">Choose disc image<input id="pick" type="file" multiple hidden></label>
+  <div id="status"></div><div id="err"></div>
+  <p class="fine">You can also drop the file anywhere on this page. Walk every level with its original textures, lighting, doors, stairs and ladders. Creatures are animated and wander about, and books, letters and signs can be read. You can pick things up and carry them, and talk with the people you meet. You can trade with them too. Combat and spells are not built yet.</p>
+</div></div>
+<div id="game" hidden>
+  <canvas id="view" class="chunky"></canvas>
+  <canvas id="map" hidden></canvas>
+  <div id="crosshair"></div>
+  <img id="held" class="px" hidden alt="">
+  <div id="stick" hidden><div></div></div>
+  <div id="where"></div>
+  <nav id="cmds" aria-label="Commands"></nav>
+  <canvas id="flaskH" class="flask px" title="Vitality"></canvas>
+  <canvas id="flaskM" class="flask px" title="Mana"></canvas>
+  <div id="hudC"><div id="msg"></div><canvas id="compass" class="px" title="Compass"></canvas></div>
+  <div id="quick"><button id="bBag" class="sq" aria-label="Inventory (I)"><img class="px" alt=""></button><button id="bJump" class="sq" aria-label="Jump (J)"><span></span></button></div>
+  <div id="panel" hidden><canvas id="pcv" class="px" width="79" height="112"></canvas><button id="chain" aria-label="Flip between inventory and character"><img class="px" alt=""></button></div>
+  <div id="opts" class="modal" hidden role="dialog" aria-modal="true" aria-label="Options"><div class="stonecard">
+    <h2>Options</h2>
+    <label class="lv">Level<select id="lvl"></select></label>
+    <div class="grid"><button id="bSave" class="sbtn">Save game</button><button id="bLoad" class="sbtn">Load game</button><button id="bNew" class="sbtn">New character</button><button id="bMap" class="sbtn">Map</button><button id="bLight" class="sbtn">Lantern</button><button id="bPix" class="sbtn">320×200</button><button id="bData" class="sbtn" title="Forget the stored game data">Forget data</button></div>
+    <p class="keys">WASD move · Shift run · J jump · E act · G get · T talk · I inventory · M map · L light · 1–9 reply · Esc close</p>
+    <button id="bOptClose" class="sbtn wide">Return to game</button>
+  </div></div>
+  <div id="menu" class="modal" hidden role="dialog" aria-modal="true" aria-label="Main menu"><div class="stonecard">
+    <h2 class="title">Ultima Underworld II</h2><p class="lead">Labyrinth of Worlds</p>
+    <div id="menuBody"></div>
+  </div></div>
+  <div id="cc" class="modal" hidden role="dialog" aria-modal="true" aria-label="Create a character"><div class="stonecard ccard">
+    <div class="ccL"><p class="step" id="ccStep"></p><h2 id="ccQ"></h2><div id="ccOpts"></div>
+      <form id="ccNameF" hidden><input id="ccName" maxlength="14" autocomplete="off" spellcheck="false"><button class="sbtn">Done</button></form></div>
+    <div class="ccR"><canvas id="ccHead" class="px" width="64" height="70"></canvas><dl id="ccStats"></dl></div>
+  </div></div>
+  <div id="talk" hidden role="dialog" aria-modal="true" aria-label="Conversation"><div class="stonecard tcard">
+    <div class="thead"><div class="who"><canvas id="tPic" class="px" width="64" height="70"></canvas><div><h2 id="tName"></h2><div class="role" id="tRole"></div></div></div>
+      <div class="who me"><canvas id="tMe" class="px" width="64" height="70"></canvas><div><h2 id="tMeName"></h2></div></div></div>
+    <div id="tLog" aria-live="polite"></div>
+    <div id="tTrade" hidden><div class="trow"><span>Their goods</span><div id="tTheirs"></div></div><div class="trow"><span>Your offer</span><div id="tOffer"></div></div><div class="trow" id="tPackL"><span>Your pack</span><div id="tPack"></div></div></div>
+    <div id="tOpts" role="group" aria-label="Your reply"></div>
+    <form id="tAskF" hidden><input id="tAsk" maxlength="40" autocomplete="off" spellcheck="false" aria-label="What do you say?"><button class="sbtn">Say</button></form>
+  </div></div>
+  <div id="scroll" hidden role="dialog" aria-modal="true"><div class="sheet"><h2></h2><div></div><button id="bClose">Close</button></div></div>
+</div>
+</body>
+</html>
