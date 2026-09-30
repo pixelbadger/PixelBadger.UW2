@@ -1,5 +1,6 @@
 import type { GameData } from '../data/gamedata';
 import type { Game } from '../game/game';
+import { magicLight } from '../game/magic';
 import { eye, viewBasis } from '../game/picking';
 import { critterQuads } from '../world/creatures';
 import type { Level } from '../world/level';
@@ -32,6 +33,18 @@ class Mesh {
   }
 }
 
+/** Billboards (stride 8) for missiles in flight: their OBJECTS.GR image, centred on the missile. */
+function missileQuads(game: Game): number[] {
+  const D = game.data, a: number[] = [];
+  for (const m of game.missiles) {
+    const im = D.objImgs[m.id];
+    if (!im) continue;
+    const w = im.w / 64, h = im.h / 64, u = (im.w - 0.02) / 64, v = (im.h - 0.02) / 64, layer = D.objBase + m.id;
+    for (const q of [[-w / 2, 0, 0, v], [w / 2, 0, u, v], [w / 2, h, u, 0], [-w / 2, 0, 0, v], [w / 2, h, u, 0], [-w / 2, h, 0, 0]]) a.push(m.x, m.h - h / 2, -m.y, q[0]!, q[1]!, q[2]!, q[3]!, layer);
+  }
+  return a;
+}
+
 /**
  * WebGL2 renderer. One R8 TEXTURE_2D_ARRAY holds every 64x64 image (unit 0); palette on unit 1, light table on unit 2,
  * the level's creature atlas on unit 3. Nearest filtering throughout. Meshes mirror the LevelScene's parts and are
@@ -40,7 +53,7 @@ class Mesh {
 export class Renderer {
   readonly gl: WebGL2RenderingContext;
   private progW: Program; private progS: Program; private progM: Program; private progC: Program;
-  private meshes: Record<'world' | 'fixed' | 'dynamic' | 'models' | 'dynModels' | 'sprites' | 'critters', Mesh>;
+  private meshes: Record<'world' | 'fixed' | 'dynamic' | 'models' | 'dynModels' | 'sprites' | 'critters' | 'missiles', Mesh>;
   private critTex: WebGLTexture | null = null;
   private synced = { level: null as Level | null, world: -1, fixed: -1, dynamic: -1, sprites: -1, critters: -1 };
   lightIdx = 2;
@@ -66,7 +79,7 @@ export class Renderer {
     t2(1, 256, 1, gl.RGBA, gl.RGBA8, D.pal); t2(2, 256, 16, gl.RED, gl.R8, D.light);
     gl.activeTexture(gl.TEXTURE0);
     gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
-    this.meshes = { world: new Mesh(gl, 6), fixed: new Mesh(gl, 6), dynamic: new Mesh(gl, 6), models: new Mesh(gl, 7), dynModels: new Mesh(gl, 7), sprites: new Mesh(gl, 8), critters: new Mesh(gl, 8) };
+    this.meshes = { world: new Mesh(gl, 6), fixed: new Mesh(gl, 6), dynamic: new Mesh(gl, 6), models: new Mesh(gl, 7), dynModels: new Mesh(gl, 7), sprites: new Mesh(gl, 8), critters: new Mesh(gl, 8), missiles: new Mesh(gl, 8) };
   }
 
   private program(vs: string, fs: string): Program {
@@ -119,13 +132,17 @@ export class Renderer {
     const asp = w / h, fovY = asp >= 1 ? 1.05 : Math.min(1.9, 2 * Math.atan(Math.tan(0.62) / asp));
     game.view = { aspect: asp, fovY };
     const E = eye(game), { F, R, U } = viewBasis(P.yaw, P.pitch);
-    const VP = mul(perspective(fovY, asp, 0.03, 80), lookFrom(E, F, R, U)), Lt = LIGHTS[this.lightIdx]!, M = this.meshes;
+    const VP = mul(perspective(fovY, asp, 0.03, 80), lookFrom(E, F, R, U)), Lt = LIGHTS[Math.max(this.lightIdx, magicLight(game))]!, M = this.meshes;
     const passes: [Program, Mesh, number, number][] = [[this.progW, M.world, 0, 0], [this.progW, M.fixed, 1, 0], [this.progW, M.dynamic, 1, 0], [this.progM, M.models, 0, 0], [this.progM, M.dynModels, 0, 0], [this.progS, M.sprites, 1, 0]];
     for (const [p, mesh, alpha, unit] of passes) this.draw(p, mesh, VP, E, Lt, alpha, unit, P.yaw);
     const a = game.atlas;
     if (a && game.L.critters.length) {
       M.critters.set(critterQuads(game.L, a, P.x, -P.z, performance.now() / 1000), gl.DYNAMIC_DRAW);
       this.draw(this.progC, M.critters, VP, E, Lt, 1, 3, P.yaw);
+    }
+    if (game.missiles.length) {
+      M.missiles.set(missileQuads(game), gl.DYNAMIC_DRAW);
+      this.draw(this.progS, M.missiles, VP, E, Lt, 1, 0, P.yaw);
     }
   }
 

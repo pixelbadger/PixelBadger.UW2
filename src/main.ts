@@ -7,6 +7,7 @@ import { act, talkTo, tryGet, use } from './game/interact';
 import { update } from './game/movement';
 import { pick } from './game/picking';
 import { closeTalk, startTalk } from './game/talk';
+import { addRune, castShelf } from './game/magic';
 import { discPlayer } from './game/player';
 import { Renderer, LIGHTS } from './render/renderer';
 import { cacheClear, cacheGet, cachePut } from './storage/kv';
@@ -58,6 +59,7 @@ async function start(files: GameFiles): Promise<void> {
   menus.onCreate = () => chargen.open();
   if (hasCutscenes(files)) menus.playCutscenes = ns => cuts.playAll(ns);
   hud.onVictory = () => void menus.showMain();
+  hud.onDied = () => { controls.reset(); setTimeout(() => void menus.showMain(), 2500); };
   const map = new Automap(game, () => hud!.say(''));
   const cycleLight = () => { renderer.lightIdx = (renderer.lightIdx + 1) % LIGHTS.length; $('#bLight').textContent = LIGHTS[renderer.lightIdx]![0]; };
   const closeText = () => ($('#scroll').hidden = true);
@@ -65,6 +67,7 @@ async function start(files: GameFiles): Promise<void> {
     toggleMap: () => map.toggle(), togglePanel: () => hud!.togglePanel(), cycleLight,
     closeOverlays: () => { closeText(); $('#opts').hidden = true; },
     talkKey: e => talk.key(e),
+    openRunes: () => hud!.openRunes(),
     cutsKey: e => cuts.key(e),
   });
   const openTalk = talk.open.bind(talk);
@@ -108,6 +111,7 @@ async function start(files: GameFiles): Promise<void> {
         renderer.render(game);
         if (map.shown) map.draw();
         hud!.drawCompass();
+        hud!.tick(dt);
       }
     } catch (e) { showFault(e instanceof Error ? e.message : String(e)); }
     requestAnimationFrame(frame);
@@ -124,6 +128,7 @@ async function start(files: GameFiles): Promise<void> {
     startTalk: (sp: Parameters<typeof startTalk>[1]) => startTalk(game, sp), closeTalk: () => closeTalk(game),
     render: () => renderer.render(game), update: (dt: number) => update(game, dt),
     supportAt: (x: number, y: number, f: number) => supportAt(game.L, x, y, f), solidBlocks: (x: number, y: number, r: number, f: number, h: number) => solidBlocks(game.L, x, y, r, f, h),
+    giveRunes: () => { for (let r = 0; r < 24; r++) addRune(game, r); }, castShelf: () => castShelf(game),
     blocked: (x: number, z: number, f: number) => game.blocked(x, z, f), unstick: () => game.unstick(), jump: () => (game.input.jump = true),
   };
 }

@@ -3,7 +3,7 @@ import type { GameData } from '../data/gamedata';
 
 /**
  * The interface art, decoded from the disc at runtime (never embedded or redrawn): command icons, flasks, compass,
- * buttons, chains, scroll edges, panels, bodies, portraits, the 5x6 font and the cutscene font. Anything missing is null and the UI falls
+ * buttons, chains, scroll edges, panels, bodies, portraits, power gem, eyes, spell icons, the 5x6 font and the cutscene font. Anything missing is null and the UI falls
  * back to text buttons and plain panels.
  */
 export class Art {
@@ -18,6 +18,10 @@ export class Art {
   readonly panels: (Img | null)[] | null;
   readonly charhead: (Img | null)[] | null;
   readonly genhead: (Img | null)[] | null;
+  /** Combat: the power gem (charge, frames 0-10) and the eyes (the last foe's health); SPELLS.GR: active spell icons. */
+  readonly power: (Img | null)[] | null;
+  readonly eyes: (Img | null)[] | null;
+  readonly spells: (Img | null)[] | null;
   readonly font: Font | null;
   /** FONTBIG.SYS: cutscene subtitles. */
   readonly bigFont: Font | null;
@@ -34,6 +38,7 @@ export class Art {
     const gr = (n: string) => { const b = f[n]; if (!b) return null; try { return readGR(b, ap); } catch (e) { console.warn(n, e); return null; } };
     this.heads = gr('HEADS.GR'); this.lfti = gr('LFTI.GR'); this.flasks = gr('FLASKS.GR'); this.comp = gr('COMPASS.GR'); this.chr = gr('CHRBTNS.GR');
     this.chains = gr('CHAINS.GR'); this.scr = gr('SCRLEDGE.GR'); this.bodies = gr('BODIES.GR'); this.charhead = gr('CHARHEAD.GR'); this.genhead = gr('GENHEAD.GR');
+    this.power = gr('POWER.GR'); this.eyes = gr('EYES.GR'); this.spells = gr('SPELLS.GR');
     let panels: (Img | null)[] | null = null;
     try { panels = f['PANELS.GR'] ? readPanels(f['PANELS.GR']) : null; } catch (e) { console.warn('PANELS.GR', e); }
     this.panels = panels && panels[0] ? panels : null;

@@ -105,6 +105,25 @@ Carried over verbatim from the single-file engine's header (legacy/uw2-web-engin
    168 you see nothing, 170 can't talk, 269/274 no space, 40-47 compass directions);
    block 2 = chargen incl. skill names 51-70.
 
+ OBJECT PROPERTIES (after UnderworldGodot's trace of UW2.EXE; NOT yet checked against the disc)
+ - OBJECTS.DAT: u16 header; 0x002 melee weapons 0x00-0x0f x 8 bytes (slash, bash, stab, min charge,
+   charge speed, max charge, skill 3 sword/4 axe/5 mace/6+ none, durability); 0x082 missiles and
+   launchers 0x10-0x1f x 3 (damage, ammo type, ranged type: a launcher's ammunition is 0x10 + type;
+   a missile's damage type is -type & 255, 0xC0 = skilled ammunition); 0x0b2 armour 0x20-0x3f x 4
+   (protection, durability, ?, slot); 0x132 creatures 0x40-0x7f x 48: 0 level (bytes 0-3 double as
+   per-body-part toughness), 4 average hit points, 5-7 str/dex/int, 8 bleed bits 3-4 / fluids 5-7,
+   9 faction & 63, 0xA damages weapon on critical miss bit 0 / corpse 2-4 / swimmer 6 / flier 7,
+   0xC speed, 0xD-0xE trading, 0xF poison, 0x11 base hit, 0x12 defence, 0x13 + 3k attack k (chance,
+   damage, probability), 0x1E sight/hearing nibbles, 0x20-0x27 loot, u16 0x28 experience, 0x2A-0x2C
+   spells, 0x2D bit 0 caster. readObjectsDat.
+ - COMOBJ.DAT: u16 header, 11 bytes per id: height (1/32 tile), u16 radius bits 0-2 / mass 4-15,
+   flags, u16 value at +4, quality class (+6 bits 2-3), damage resistances (+8: 1/2 magic, 4 physical,
+   8 fire, 0x10 poison, 0x20 ice, 0x40 missiles, 0x80 paralysis-proof), render type (+9). readComObj.
+ - Runic spells: rune0 << 10 | rune1 << 5 | rune2 (24 = empty) -> UW2's 69-entry (major, minor) table
+   (src/game/spells.ts); names STRINGS block 6, 256 + index. Rune stones 0xE8-0xFF, rune bag 0x8F,
+   PANELS.GR 1 is the rune bag. POWER.GR (charge gem), EYES.GR (foe health), SPELLS.GR (effect icons:
+   base 0x14/-1/0x13/5 for classes 0-3, 0x11 for 11, + minor). See docs/COMBAT.md.
+
  CONVERSATIONS (verified by disassembling and running all 102 programs; uw2-conversations.md
  is the fuller spec, but it is WRONG on the points marked * below)
  - CNV.ARK = LEV.ARK layout, all blocks compressed; 102 populated slots (1..168, none >=256).

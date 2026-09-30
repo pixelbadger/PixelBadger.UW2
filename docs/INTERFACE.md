@@ -32,5 +32,9 @@ Carried over verbatim from the single-file engine's header (legacy/uw2-web-engin
    on the view re-locks, except when holding an item (then it drops where clicked).
  - Keys: WASD, Shift, J jump, E/Space act (current mode), G get, I inventory, M map,
    L light, T talk, Esc closes.
+ - Combat and magic (docs/COMBAT.md) use the original's pieces: the fight icon, hold-to-draw-back
+   swings (P bash, ; slash, . stab, or by height on the view), the power gem beside the compass, the
+   eyes above the view, the rune bag on the panel (PANELS.GR 1, opened by using the bag), the rune
+   shelf beside the compass (tap or C casts), active spell icons top right. R opens the rune bag (ours).
 
 ```

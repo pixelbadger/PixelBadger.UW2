@@ -8,6 +8,7 @@ import { portable, type SlotKey } from './inventory';
 import { eye, pick, type Hit } from './picking';
 import { startTalk } from './talk';
 import { sleep } from './cutscenes';
+import { RUNE_BAG, addRune, isRuneStone, releasePending, runeName, stowRune } from './magic';
 
 // The command modes (use, look, get, talk, fight) acting on what the Avatar points at.
 
@@ -93,6 +94,7 @@ export function tryGet(game: Game, h: Hit | null): void {
   const objs = game.L.objs, at = objs.indexOf(o);
   if (at >= 0) objs.splice(at, 1);
   game.refreshObjects();
+  if (stowRune(game, o.id)) return;
   if (inv.stow(o)) game.say(`You put ${nameOf(D, o.id)} in your pack.`);
   else { inv.held = o; game.say(`You hold ${nameOf(D, o.id)}.`); }
   game.ui.inventoryChanged();
@@ -128,17 +130,31 @@ export function talkTo(game: Game, h: Hit | null): void {
 
 /** The primary action at screen point (nx, ny) in the current mode. */
 export function act(game: Game, nx: number, ny: number): void {
+  if (game.dead) return;
+  if (game.magic.pending) { releasePending(game, nx, ny); return; }
   if (game.inv.held) { dropHeld(game, nx, ny); return; }
   if (game.mode === 'get') return tryGet(game, pick(game, nx, ny));
   if (game.mode === 'look') return use(game, nx, ny, true);
   if (game.mode === 'talk') return talkTo(game, pick(game, nx, ny));
-  if (game.mode === 'fight') { game.say('Combat is not built yet.'); return; }
+  if (game.mode === 'fight') return; // fight mode acts on press and release (combat.ts: beginSwing / releaseSwing)
   use(game, nx, ny, false);
 }
 
-/** A tap on a paperdoll/bag slot: swap with the cursor, or pick the item up (look mode describes it). */
-export function slotClick(game: Game, k: SlotKey): void {
+/**
+ * A tap on a paperdoll/bag slot: swap with the cursor, or pick the item up (look mode describes it). A rune stone
+ * dropped on the rune bag goes into it; in use mode a tap on the rune bag opens it (returns 'runes').
+ */
+export function slotClick(game: Game, k: SlotKey): 'runes' | void {
   const D = game.data, inv = game.inv, cur = inv.get(k);
+  if (inv.held && cur?.id === RUNE_BAG) {
+    const h = inv.held;
+    if (!isRuneStone(h.id)) { game.say(S1(D, 262) || 'You can only put runes in the rune bag.'); return; }
+    inv.held = null; addRune(game, h.id - 0xe8);
+    game.say(`You put the ${runeName(game, h.id - 0xe8)} rune in your rune bag.`);
+    game.ui.inventoryChanged();
+    return;
+  }
+  if (!inv.held && cur?.id === RUNE_BAG && game.mode === 'use') return 'runes';
   if (inv.held) { inv.set(k, inv.held); inv.held = cur; game.say(cur ? `You now hold ${nameOf(D, cur.id)}.` : ''); }
   else if (cur) {
     if (game.mode === 'look') { describe(game, cur); return; }

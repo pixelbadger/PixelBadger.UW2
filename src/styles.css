@@ -40,6 +40,16 @@ p{line-height:1.55;margin:0 0 1rem;color:#d8ccb2;max-width:62ch}
 .flask{position:absolute;bottom:calc(env(safe-area-inset-bottom,0px) + 10px);filter:drop-shadow(0 3px 6px rgba(0,0,0,.7))}
 #flaskH{left:12px} #flaskM{right:12px}
 #hudC{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 8px);display:flex;flex-direction:column;align-items:center;gap:6px;pointer-events:none;max-width:calc(100% - 180px)}
+#hudRow{display:flex;align-items:center;gap:8px}
+#power{filter:drop-shadow(0 3px 6px rgba(0,0,0,.7))}
+#shelf{pointer-events:auto;display:flex;gap:2px;padding:3px;border:1px solid #0b0a08;cursor:pointer;min-height:24px;
+  background:var(--stone-bg,#2a2620);background-size:calc(20px * var(--u,3)) auto;box-shadow:0 0 0 1px #5a5246,0 3px 8px rgba(0,0,0,.6)}
+#shelf canvas{display:block;min-width:16px}
+#eyes{position:absolute;left:50%;top:calc(env(safe-area-inset-top,0px) + 6px);transform:translateX(-50%);pointer-events:none;filter:drop-shadow(0 2px 4px #000)}
+#spells{position:absolute;right:14px;top:calc(env(safe-area-inset-top,0px) + 10px);display:flex;gap:4px}
+#spells canvas{cursor:pointer;filter:drop-shadow(0 2px 3px #000)}
+#hurt{position:absolute;inset:0;background:#a01808;opacity:0;pointer-events:none;transition:opacity .25s}
+#crosshair.aim{width:10px;height:10px;margin:-5px;background:none;border:2px solid var(--torch);opacity:.9}
 #compass{pointer-events:auto;cursor:pointer;filter:drop-shadow(0 3px 6px rgba(0,0,0,.7))}
 #msg{position:relative;text-align:center;font-style:italic;font-size:1.02rem;line-height:1.35;color:#2b2217;background:linear-gradient(#d9c9a0,#c7b183);
   padding:.28em calc(var(--scw,6px) + .9em);border-radius:1px;box-shadow:0 3px 12px rgba(0,0,0,.55);transition:opacity .6s;max-width:34rem}
@@ -85,6 +95,8 @@ p{line-height:1.55;margin:0 0 1rem;color:#d8ccb2;max-width:62ch}
   #msg{font-size:.92rem}
   #quick{right:14px;bottom:calc(env(safe-area-inset-bottom,0px) + var(--fh,100px) + 16px)}
   #hudC{max-width:calc(100% - 150px)}
+  #spells{right:auto;left:14px;top:calc(env(safe-area-inset-top,0px) + 86px)}
+  #eyes{top:calc(env(safe-area-inset-top,0px) + 58px)}
 }
 #crosshair{position:absolute;left:50%;top:50%;width:4px;height:4px;margin:-2px;background:var(--parch);opacity:.5;pointer-events:none;border-radius:50%}
 #stick{position:absolute;width:96px;height:96px;margin:-48px;border:2px solid rgba(233,223,200,.35);border-radius:50%;pointer-events:none}

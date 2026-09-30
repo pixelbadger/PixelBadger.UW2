@@ -8,6 +8,8 @@ import { Inventory } from './inventory';
 import { newPose, type PlayerStats, type Pose } from './player';
 import { nullUi, type UiPort } from './ports';
 import type { TalkSession } from './talk';
+import { newSwing, type Missile, type SwingState } from './combat';
+import { newMagic, type MagicState } from './magic';
 
 /** Conversation memory that outlives a talk: per-NPC private globals, quest flags, x_clock clocks, x_traps variables. */
 export interface ConvState { g: Record<number, number[]>; q: number[]; c: number[]; t: number[] }
@@ -26,6 +28,8 @@ export interface Input { forward: number; strafe: number; turn: number; run: boo
  *   player   stats (PL), pose (P), inv
  *   story    conv (quests, clocks, NPC memory), minutes (game clock)
  *   session  talk (an open conversation), mode (command icon), rng
+ *   combat   swing (the Avatar's attack), missiles (in flight on this level), poison, dead
+ *   magic    runes, shelf, lasting effects, a spell waiting to be aimed; timers (the 20-second clock)
  */
 export class Game {
   ui: UiPort = nullUi();
@@ -42,6 +46,14 @@ export class Game {
   talk: TalkSession | null = null;
   mode: Mode = 'use';
   readonly input: Input = { forward: 0, strafe: 0, turn: 0, run: false, jump: false };
+  swing: SwingState = newSwing();
+  missiles: Missile[] = [];
+  magic: MagicState = newMagic();
+  /** Poison strength (lost one a minute, doing that much damage). */
+  poison = 0;
+  dead = false;
+  /** The 20-second clock: seconds into the current tick, and ticks (mod 60). */
+  timers = { t: 0, n: 0 };
   /** The last rendered view, for picking: aspect ratio and vertical field of view. */
   view = { aspect: 16 / 10, fovY: 1.05 };
 
@@ -57,6 +69,7 @@ export class Game {
   loadLevel(n: number): void {
     const L = new Level(this.data, n, this.levelStates[n]);
     this.level = L;
+    this.missiles = [];
     this.atlas = buildCritters(L, this.rng);
     L.scene.version.critters++;
     L.scene.rebuildAll();
@@ -166,11 +179,16 @@ export class Game {
   newGame(pl: PlayerStats): void {
     this.stats = pl; this.inv.clear(); this.levelStates = {}; this.visited = {}; this.level = null;
     this.conv = newConvState(); this.minutes = 0;
+    this.resetCombat(); this.magic = newMagic();
     this.goLevel(0);
     this.setPlayer(pl);
     this.ui.inventoryChanged();
+    this.ui.magicChanged();
     this.say(S1(this.data, 13));
   }
+
+  /** Alive, nothing in flight, no poison, no swing (a new game or a loaded one). */
+  resetCombat(): void { this.dead = false; this.swing = newSwing(); this.missiles = []; this.poison = 0; this.timers = { t: 0, n: 0 }; }
 
   levelLabel(): string { return levelName(this.L.n); }
 }

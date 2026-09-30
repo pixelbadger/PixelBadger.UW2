@@ -4,6 +4,7 @@ import { writeGR } from '../../src/formats/gr';
 import { writeIso } from '../../src/formats/iso';
 import { writeStrings } from '../../src/formats/strings';
 import { writeConv } from '../../src/formats/conv';
+import { writeComObj, writeObjectsDat } from '../../src/formats/objdat';
 import type { GameFiles } from '../../src/data/files';
 import { assemble, menu, call, store } from './asm';
 
@@ -20,10 +21,14 @@ export const NPC = { x: 34, y: 34, who: 1 };
 export const DOOR = { x: 32, y: 37 };
 export const TRIGGER = { x: 32, y: 39, destX: 29, destY: 33 };
 export const BED = { x: 35, y: 29 };
+/** With { combat: true }: a hostile-minded monster (0x46, attitude 0), a rune bag and two rune stones (In, Lor). */
+export const MONSTER = { x: 33, y: 31, id: 0x46, hp: 20 };
+export const RUNEBAG = { x: 29, y: 29 };
+export const RUNES = { x: 29, y: 30, ids: [0xe8 + 8, 0xe8 + 11] };
 
 const u16 = (a: number[] | Uint8Array, o: number, v: number) => { a[o] = v & 255; a[o + 1] = (v >> 8) & 255; };
 
-function level0(): Uint8Array {
+function level0(combat = false): Uint8Array {
   const L = new Uint8Array(0x7e08);
   const tile = (x: number, y: number, type: number, h = 0, floor = 1, wall = 2) => { const i = (y * 64 + x) * 4; u16(L, i, type | (h << 4) | (floor << 10)); u16(L, i + 2, wall); };
   for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) tile(x, y, 0);
@@ -51,6 +56,13 @@ function level0(): Uint8Array {
   obj(262, { id: 0x161, hd: 0, fx: 3, fy: 7, z: 40 }); first(33, ROOM.y1, 262); // a lever on the north wall
   obj(263, { id: 0x166, hd: 4, fx: 3, fy: 0, z: 40, isq: 1, link: 0x200 }); first(33, ROOM.y0, 263); // wall writing (block 8, 0)
   obj(264, { id: 0x167 }); first(BED.x, BED.y, 264);                     // a bed
+  if (combat) {
+    const m = obj(2, { id: MONSTER.id, hd: 0 }); // attitude 0, goal 0: it attacks once it sees the Avatar
+    L[m + 8] = MONSTER.hp; u16(L, m + 0x16, (MONSTER.x << 10) | (MONSTER.y << 4));
+    first(MONSTER.x, MONSTER.y, 2);
+    obj(265, { id: 0x8f }); first(RUNEBAG.x, RUNEBAG.y, 265);
+    obj(266, { id: RUNES.ids[0]!, next: 267 }); obj(267, { id: RUNES.ids[1]! }); first(RUNES.x, RUNES.y, 266);
+  }
   return L;
 }
 
@@ -81,12 +93,17 @@ export function synthStrings(extra: Map<number, string[]> = new Map()): Uint8Arr
   const b2 = Array.from({ length: 80 }, (_, i) => `Choice ${i}`);
   const b4 = Array.from({ length: 512 }, (_, i) => `a_thing${i}&things`);
   b4[0x01] = 'a_sword&swords'; b4[0x140] = 'a_door&doors'; b4[0x161] = 'a_lever&levers';
+  b4[0x46] = 'a_goblin&goblins'; b4[0x8f] = 'a_rune_bag&rune_bags'; b4[0x12] = 'an_arrow&arrows'; b4[0x19] = 'a_bow&bows';
+  ['An', 'Bet', 'Corp', 'Des', 'Ex', 'Flam', 'Grav', 'Hur', 'In', 'Jux', 'Kal', 'Lor', 'Mani', 'Nox', 'Ort', 'Por', 'Quas', 'Rel', 'Sanct', 'Tym', 'Uus', 'Vas', 'Wis', 'Ylem']
+    .forEach((r, i) => (b4[0xe8 + i] = `an_${r}_stone&${r}_stones`));
+  const b6 = Array.from({ length: 330 }, (_, i) => (i >= 256 ? `spell ${i - 256}` : ''));
+  b6[256 + 5] = 'Light'; b6[256 + 2] = 'Magic Arrow'; b6[256 + 11] = 'Lesser Heal';
   const b7 = Array.from({ length: 64 }, (_, i) => `line ${i}`);
   b7[0] = 'You cannot talk to that!'; b7[1] = 'You get no response.'; b7[16 + NPC.who] = 'Testa';
   const b8 = ['Beware the slugs.'];
   const b10 = Array.from({ length: 8 }, (_, i) => `a_wall${i}`);
   const convStrings = ['Greetings, @GS8. I am @GS25.', 'Ask about the slugs', 'Leave', 'So be it.', 'Farewell.'];
-  const m = new Map<number, string[]>([[1, b1], [2, b2], [3, ['A blank book.']], [4, b4], [7, b7], [8, b8], [10, b10], [0x0e01, convStrings]]);
+  const m = new Map<number, string[]>([[1, b1], [2, b2], [3, ['A blank book.']], [4, b4], [6, b6], [7, b7], [8, b8], [10, b10], [0x0e01, convStrings]]);
   for (const [k, v] of extra) m.set(k, v);
   return writeStrings(m);
 }
@@ -106,8 +123,30 @@ export function synthConversation(quest = 5, value = 1): Uint8Array {
   return writeConv({ strBlock: 0x0e01, G: 64, imports: fns.map((name, id) => ({ name, id, kind: 'fn', ret: 0 })), code });
 }
 
-/** Every file the engine reads, synthetic. */
-export function synthFiles(): GameFiles {
+/** OBJECTS.DAT for the synthetic disc: a sword, fists, a bow and arrows, two spell missiles, the goblin. */
+export function synthObjectsDat(): Uint8Array {
+  const weapons = Array.from({ length: 16 }, () => ({}));
+  weapons[1] = { slash: 8, bash: 6, stab: 7, minCharge: 10, chargeSpeed: 20, maxCharge: 80, skill: 3 };
+  weapons[15] = { slash: 2, bash: 2, stab: 2, minCharge: 5, chargeSpeed: 30, maxCharge: 60, skill: 2 };
+  const ranged = Array.from({ length: 16 }, () => ({}));
+  ranged[2] = { damage: 6, type: 0xc0 };  // 0x12 arrows: skilled ammunition, missile damage (0x40)
+  ranged[9] = { type: 2 };                // 0x19 bow: shoots 0x10 + 2
+  ranged[7] = { damage: 6, type: 0xfc };  // 0x17 magic arrow: physical
+  ranged[4] = { damage: 12, type: 0xf8 }; // 0x14 fireball: fire
+  const critters = Array.from({ length: 64 }, () => ({}));
+  critters[6] = { avghit: MONSTER.hp, str: 10, defence: 5, baseHit: 4, bleed: 1, corpse: 1, sight: 4, exp: 40, attacks: [{ hit: 12, dmg: 4, prob: 100 }] };
+  return writeObjectsDat({ weapons, ranged, critters });
+}
+
+/** A minimal CRIT folder: the goblin (0x46) is critter file 0 with no frames, so creatures exist headlessly. */
+function synthCrit(): GameFiles {
+  const as = new Uint8Array(128).fill(255);
+  as[(MONSTER.id - 0x40) * 2] = 0; as[(MONSTER.id - 0x40) * 2 + 1] = 0;
+  return { 'CRIT/AS.AN': as, 'CRIT/CR.AN': new Uint8Array(512), 'CRIT/CR00.00': new Uint8Array(0x80 + 512) };
+}
+
+/** Every file the engine reads, synthetic. { combat }: adds the monster, runes, OBJECTS.DAT, COMOBJ.DAT and CRIT. */
+export function synthFiles(opts: { combat?: boolean } = {}): GameFiles {
   const pals = new Uint8Array(768);
   for (let i = 0; i < 256; i++) { pals[i * 3] = (i * 7) & 63; pals[i * 3 + 1] = (i * 3) & 63; pals[i * 3 + 2] = (i * 5) & 63; }
   const light = new Uint8Array(4096);
@@ -115,7 +154,7 @@ export function synthFiles(): GameFiles {
   const allpals = new Uint8Array(16 * 32);
   for (let i = 0; i < allpals.length; i++) allpals[i] = i & 255;
   const blocks: (Uint8Array | null)[] = Array(320).fill(null);
-  blocks[0] = level0(); blocks[80] = texmap();
+  blocks[0] = level0(!!opts.combat); blocks[80] = texmap();
   const objs = Array.from({ length: 512 }, (_, i) => img(8, 8, 32 + (i % 200)));
   const cnv: (Uint8Array | null)[] = Array(2).fill(null);
   cnv[1] = synthConversation();
@@ -130,6 +169,10 @@ export function synthFiles(): GameFiles {
     'STRINGS.PAK': synthStrings(),
     'TMOBJ.GR': writeGR(Array.from({ length: 54 }, (_, i) => img(16, 16, 100 + i))),
     'CNV.ARK': writeArk(cnv, uw2CompressLiteral),
+    ...(opts.combat ? {
+      ...synthCrit(), 'OBJECTS.DAT': synthObjectsDat(),
+      'COMOBJ.DAT': writeComObj({ 1: { radius: 2 }, 15: { radius: 1 }, [MONSTER.id]: { height: 32, radius: 2 }, 127: { height: 24 } }),
+    } : {}),
   };
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  readComObj, readObjectsDat, writeComObj, writeObjectsDat,
   DataError, decodeLevel, readArk, readConv, readGR, readStrings, uw2Decompress, uw2CompressLiteral, writeArk, writeGR, writeStrings, disConv,
 } from '../../src/formats';
 import { filesFromIso } from '../../src/data/files';
@@ -8,6 +9,24 @@ import { isProp } from '../../src/world/props';
 import { synthConversation, synthFiles, synthIso, NPC, START } from '../helpers/synth';
 
 describe('format writers and readers agree', () => {
+  it('OBJECTS.DAT and COMOBJ.DAT tables', () => {
+    const o = readObjectsDat(writeObjectsDat({
+      weapons: [{ slash: 3, bash: 4, stab: 5, minCharge: 6, chargeSpeed: 7, maxCharge: 8, skill: 3, durability: 9 }],
+      ranged: [{}, { damage: 6, ammo: 1, type: 0xc0 }], armour: [{ protection: 2, durability: 7, slot: 4 }],
+      critters: [{ toughness: [-1, 2, 3, 4], avghit: 20, str: 11, defence: 9, bleed: 2, fluids: 3, corpse: 5, flier: true, attacks: [{ hit: 1, dmg: 2, prob: 3 }], sight: 6, hearing: 5, exp: 1234, spells: [2, 0, 0], caster: true }],
+    }));
+    expect(o.weapons[0]).toEqual({ slash: 3, bash: 4, stab: 5, minCharge: 6, chargeSpeed: 7, maxCharge: 8, skill: 3, durability: 9 });
+    expect(o.ranged[1]).toEqual({ damage: 6, ammo: 1, type: 0xc0 });
+    expect(o.armour[0]).toEqual({ protection: 2, durability: 7, slot: 4 });
+    const c = o.critters[0]!;
+    expect([c.toughness, c.avghit, c.str, c.defence, c.bleed, c.fluids, c.corpse, c.flier, c.sight, c.hearing, c.exp, c.spells, c.caster])
+      .toEqual([[-1, 2, 3, 4], 20, 11, 9, 2, 3, 5, true, 6, 5, 1234, [2, 0, 0], true]);
+    expect(c.attacks[0]).toEqual({ hit: 1, dmg: 2, prob: 3 });
+    const co = readComObj(writeComObj({ 5: { height: 32, radius: 3, mass: 700, value: 99, qualityClass: 2, resist: 0x28 } }));
+    expect(co[5]).toEqual({ height: 32, radius: 3, mass: 700, value: 99, qualityClass: 2, resist: 0x28 });
+    expect(co[6]!.height).toBe(0);
+  });
+
   it('decompresses literal runs and back references', () => {
     const data = Uint8Array.from({ length: 300 }, (_, i) => (i * 37) & 255);
     expect(uw2Decompress(uw2CompressLiteral(data))).toEqual(data);

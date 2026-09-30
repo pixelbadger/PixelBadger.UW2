@@ -5,6 +5,7 @@ import type { LevelSnapshot } from '../world/level';
 import { newConvState, type ConvState, type Game } from './game';
 import { SLOT_KEYS, type SlotKey } from './inventory';
 import type { PlayerStats } from './player';
+import { newMagic } from './magic';
 
 // Saves: four slots like the original, kept in this browser. A save is plain data with an explicit schema version.
 // Loading goes: raw -> migrate (one step per version) -> validate -> apply. Anything that fails is rejected with a
@@ -14,15 +15,18 @@ import type { PlayerStats } from './player';
 //   1  (single-file engine) {v, when, PL, INV, lvl, P, visited, levels, conv?, time?}; object records overloaded `inv`
 //      (the invisible bit, or an NPC's inventory array) and carried derived render data (f, panel).
 //   2  {v, when, player, inventory, level, pose, visited, levels, conv, minutes}; objects carry `invis` and `items`.
-//      Creature positions are still not saved (they reset to their posts).
+//   3  v2 + {magic: {runes, shelf, effects}, poison}. Creature hit points, hostility and deaths live in the level
+//      snapshots' NPC records (v2 already carried them); positions are still not saved (they reset to their posts).
 
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
 export const SAVE_SLOTS = 4;
 
 export class SaveError extends Error { override name = 'SaveError'; }
 
-export interface SaveV2 {
-  v: 2;
+export interface SavedMagic { runes: boolean[]; shelf: number[]; effects: { major: number; minor: number; stab: number }[] }
+
+export interface SaveV3 {
+  v: 3;
   when: number;
   player: PlayerStats;
   inventory: Partial<Record<SlotKey | 'held', ObjRec | null>>;
@@ -32,6 +36,8 @@ export interface SaveV2 {
   levels: Record<number, LevelSnapshot>;
   conv: ConvState;
   minutes: number;
+  magic: SavedMagic;
+  poison: number;
 }
 
 type Raw = Record<string, unknown>;
@@ -60,7 +66,10 @@ function migrate1to2(d: Raw): Raw {
   };
 }
 
-const MIGRATIONS: Record<number, (d: Raw) => Raw> = { 1: migrate1to2 };
+/** v2 -> v3: no runes, no effects, no poison. */
+const migrate2to3 = (d: Raw): Raw => ({ ...d, v: 3, magic: { runes: Array(24).fill(false), shelf: [], effects: [] }, poison: 0 });
+
+const MIGRATIONS: Record<number, (d: Raw) => Raw> = { 1: migrate1to2, 2: migrate2to3 };
 
 /** Brings any known version up to SAVE_VERSION. */
 export function migrateSave(raw: unknown): Raw {
@@ -119,11 +128,22 @@ function checkPlayer(p: unknown): PlayerStats {
   for (const k of ['vit', 'mana'] as const) { const a = numArray(p[k], 2, k); if (a.length !== 2) fail(k); }
   numArray(p.skills, 32, 'skills');
   if (p.exp !== null && p.exp !== undefined) num(p.exp, -1e9, 1e9, 'experience');
+  if (p.level !== undefined) int(p.level, 1, 16, 'level');
   return p as unknown as PlayerStats;
 }
 
 /** Checks a migrated save against the disc it will load into. */
-export function validateSave(d: Raw, levelExists: (n: number) => boolean): SaveV2 {
+function checkMagic(m: unknown): SavedMagic {
+  if (!isObj(m)) return fail('magic');
+  if (!Array.isArray(m.runes) || m.runes.length !== 24 || !m.runes.every(r => typeof r === 'boolean')) fail('runes');
+  if (!Array.isArray(m.shelf) || m.shelf.length > 3) fail('rune shelf');
+  (m.shelf as unknown[]).forEach(r => int(r, 0, 23, 'rune shelf'));
+  if (!Array.isArray(m.effects) || m.effects.length > 3) fail('spell effects');
+  for (const e of m.effects as unknown[]) { if (!isObj(e)) fail('spell effect'); int(e.major, 0, 15, 'spell effect'); int(e.minor, 0, 63, 'spell effect'); int(e.stab, 0, 255, 'spell effect'); }
+  return m as unknown as SavedMagic;
+}
+
+export function validateSave(d: Raw, levelExists: (n: number) => boolean): SaveV3 {
   if (d.v !== SAVE_VERSION) fail('version');
   num(d.when, 0, 1e15, 'date');
   checkPlayer(d.player);
@@ -154,11 +174,13 @@ export function validateSave(d: Raw, levelExists: (n: number) => boolean): SaveV
   for (const [k, g] of Object.entries(conv.g)) { int(+k, 0, 1023, 'conversation slot'); numArray(g, 65536, 'conversation memory'); }
   for (const k of ['q', 'c', 't'] as const) numArray(conv[k], 4096, 'quests');
   num(d.minutes, 0, 1e12, 'game clock');
-  return d as unknown as SaveV2;
+  checkMagic(d.magic);
+  int(d.poison, 0, 255, 'poison');
+  return d as unknown as SaveV3;
 }
 
 /** raw (from storage) -> a save this engine can load, or SaveError. */
-export function parseSave(raw: unknown, levelExists: (n: number) => boolean): SaveV2 {
+export function parseSave(raw: unknown, levelExists: (n: number) => boolean): SaveV3 {
   return validateSave(migrateSave(raw), levelExists);
 }
 
@@ -178,24 +200,28 @@ export function describeSave(raw: unknown): { title: string; when: string } | nu
 
 // ---------- to and from the game ----------
 
-export function makeSave(game: Game): SaveV2 {
+export function makeSave(game: Game): SaveV3 {
   game.snapshotLevel();
   const P = game.pose, L = game.L;
   game.visited[L.n] = { x: P.x, z: P.z, yaw: P.yaw };
   return {
-    v: 2, when: Date.now(), player: game.stats!, inventory: game.inv.toJSON(), level: L.n, pose: { x: P.x, y: P.y, z: P.z, yaw: P.yaw },
+    v: 3, when: Date.now(), player: game.stats!, inventory: game.inv.toJSON(), level: L.n, pose: { x: P.x, y: P.y, z: P.z, yaw: P.yaw },
     visited: game.visited, levels: game.levelStates, conv: game.conv, minutes: game.minutes,
+    magic: { runes: game.magic.runes, shelf: game.magic.shelf, effects: game.magic.effects }, poison: game.poison,
   };
 }
 
 /** Replaces the game's state with a validated save. */
-export function applySave(game: Game, d: SaveV2): void {
+export function applySave(game: Game, d: SaveV3): void {
   game.stats = d.player;
   game.inv.load(d.inventory);
   game.levelStates = d.levels; game.visited = d.visited; game.level = null;
   const conv = newConvState();
   game.conv = { g: d.conv.g ?? conv.g, q: d.conv.q ?? conv.q, c: d.conv.c ?? conv.c, t: d.conv.t ?? conv.t };
   game.minutes = d.minutes;
+  game.resetCombat();
+  game.magic = { ...newMagic(), runes: [...d.magic.runes], shelf: [...d.magic.shelf], effects: d.magic.effects.map(e => ({ ...e })) };
+  game.poison = d.poison;
   game.loadLevel(d.level);
   game.ui.levelChanged(d.level);
   const P = game.pose;
@@ -203,5 +229,6 @@ export function applySave(game: Game, d: SaveV2): void {
   game.unstick();
   game.setPlayer(game.stats);
   game.ui.inventoryChanged();
+  game.ui.magicChanged();
 }
 

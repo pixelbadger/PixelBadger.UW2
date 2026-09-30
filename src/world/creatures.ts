@@ -7,8 +7,9 @@ import type { Level } from './level';
 import type { Pick } from './props';
 
 // Creatures: CRIT sprites (AS.AN picks a critter file and aux palette per NPC id 0x40-0x7f; CR.AN holds 64 animations
-// per critter; anims 0-7 idle, 8-15 walk, by view direction). The AI here is a stand-in: amble near the post, chase
-// the Avatar when hostile (goal 5, target 1). Combat will replace the chase's last step.
+// per critter; animation group g at anims g*8..g*8+7 by view direction: 0 idle, 1 walk, 2 combat idle, 3-5 the three
+// melee attacks, 6 spell/ranged attack, 7 death). The AI here is a stand-in: amble near the post; a creature the game
+// calls hostile closes in and fights (the rules live in game/combat.ts, reached through CritterCtx).
 
 export interface CritSet { key: number; frames: (CritFrame | null)[]; anims: number[][] }
 
@@ -23,9 +24,17 @@ export interface Critter {
   wait: number;
   tx: number | null; ty: number | null;
   walking: boolean;
-  warned?: boolean;
   /** A conversation's set_sequence: CR.AN group g, frame f (unverified). */
   seq?: { g: number; f: number };
+  /** An animation played once: attack (group 3-5, n = attack 0-2), spell (group 6, n = -1) or death (group 7). */
+  act?: { g: number; f: number; t: number; n: number; struck?: boolean };
+  /** Dying: the death animation is playing; the game removes the creature when it ends. */
+  dying?: boolean;
+  /** Attack build-up, 0-15 (the original's swing charge index). */
+  swing?: number;
+  /** Seconds to the next combat decision; paralysed for this many seconds. */
+  aiT?: number;
+  para?: number;
   pick: Pick & { crit: Critter };
 }
 
@@ -101,6 +110,12 @@ export function critterFrame(c: Critter, camX: number, camY: number, time: numbe
   const rel = Math.round((Math.atan2(camX - c.x, camY - c.y) - c.ang) / (Math.PI / 4));
   const dir = (((4 - rel) % 8) + 8) % 8; // 4 = facing the viewer
   const A = c.set.anims;
+  if (c.act) {
+    const l = A[c.act.g * 8 + dir]?.length ? A[c.act.g * 8 + dir]! : A[c.act.g * 8 + 4]?.length ? A[c.act.g * 8 + 4]! : A[dir]?.length ? A[dir]! : A[4];
+    if (!l || !l.length) return null;
+    const fi = l[Math.min(c.act.f, l.length - 1)]!, f = c.set.frames[fi];
+    return f ? { f, fi } : null;
+  }
   const seqList = c.seq ? A[c.seq.g * 8 + dir] : undefined;
   let list = c.seq ? seqList : c.walking ? A[8 + dir] : A[dir];
   if (!list || !list.length) list = A[dir];
@@ -115,8 +130,41 @@ export interface CritterCtx {
   rng: Rng;
   /** Player position in tile coords. */
   px: number; py: number;
-  /** A hostile creature reached the Avatar (once per creature). */
-  onAttack(c: Critter): void;
+  /** Is this creature fighting the Avatar? (The game may turn it hostile here: it saw the Avatar.) */
+  hostile(c: Critter, dist: number): boolean;
+  /** Which melee attack (0-2) to make, or -1 to cast/shoot instead (checked when out of reach too). */
+  pickAttack(c: Critter, dist: number): number;
+  /** The attack animation reached its striking frame: n = attack 0-2, or -1 for a spell or missile. */
+  onStrike(c: Critter, n: number): void;
+  /** The death animation ended. */
+  onDead(c: Critter): void;
+}
+
+/** Seconds per frame of a one-shot animation; the frame a melee attack lands on (UW2: 3, or the last if shorter). */
+export const ACT_FRAME = 0.15, HIT_FRAME = 3;
+/** Distance (tiles, centre to centre) at which a creature strikes. */
+export const MELEE_REACH = 0.85;
+
+/** Frames in animation group g as seen from the front (at least 1). */
+export function actLength(c: Critter, g: number): number {
+  const A = c.set.anims;
+  return Math.max(1, A[g * 8 + 4]?.length || A[g * 8]?.length || 1);
+}
+
+/** Starts a one-shot animation. */
+export function startAct(c: Critter, g: number, n = 0): void { c.act = { g, f: 0, t: 0, n }; c.walking = false; }
+
+function stepAct(c: Critter, dt: number, ctx: CritterCtx): void {
+  const a = c.act!, len = actLength(c, a.g);
+  a.t += dt;
+  while (a.t >= ACT_FRAME && c.act === a) {
+    a.t -= ACT_FRAME; a.f++;
+    if (a.g >= 3 && a.g <= 6 && !a.struck && (a.f === HIT_FRAME || (len - 1 < HIT_FRAME && a.f >= len - 1))) { a.struck = true; ctx.onStrike(c, a.n); }
+    if (a.f >= len) {
+      if (a.g === 7) { a.f = len - 1; ctx.onDead(c); return; }
+      c.act = undefined;
+    }
+  }
 }
 
 function critterFree(L: Level, c: Critter, x: number, y: number, ctx: CritterCtx): boolean {
@@ -130,15 +178,23 @@ function critterFree(L: Level, c: Critter, x: number, y: number, ctx: CritterCtx
   return true;
 }
 
-function chase(L: Level, c: Critter, dt: number, ctx: CritterCtx): void {
-  const dx = ctx.px - c.x, dy = ctx.py - c.y, d = Math.hypot(dx, dy);
+/** A hostile creature: close in, then build up and strike (the original's goal 5 in outline, at 4 decisions a second). */
+function fight(L: Level, c: Critter, dt: number, ctx: CritterCtx, d: number): void {
+  const dx = ctx.px - c.x, dy = ctx.py - c.y;
   c.ang = Math.atan2(dx, dy);
-  if (d < 0.8 || d > 12) {
+  c.aiT = (c.aiT ?? 0) - dt;
+  const decide = c.aiT <= 0;
+  if (decide) c.aiT = 0.25;
+  if (d <= MELEE_REACH) {
     c.walking = false;
-    if (d < 0.8 && !c.warned) { c.warned = true; ctx.onAttack(c); }
+    if (!decide) return;
+    if (ctx.rng() < 0.25) { const n = ctx.pickAttack(c, d); startAct(c, n < 0 ? 6 : 3 + n, n); }
+    else c.swing = Math.min(15, (c.swing ?? 0) + 1);
     return;
   }
-  const sp = Math.min(d, 1.1 * dt), nx = c.x + (dx / d) * sp, ny = c.y + (dy / d) * sp, f = supportAt(L, nx, ny, c.h);
+  if (decide && ctx.rng() < 0.15 && ctx.pickAttack(c, d) < 0) { startAct(c, 6, -1); return; }
+  if (d > 12) { c.walking = false; return; }
+  const sp = Math.min(d - MELEE_REACH * 0.9, 1.1 * dt), nx = c.x + (dx / d) * sp, ny = c.y + (dy / d) * sp, f = supportAt(L, nx, ny, c.h);
   if (f != null && Math.abs(f - c.h) <= STEP && !solidBlocks(L, nx, ny, CRAD, c.h, CBODY) && L.floorAt(nx, -ny) != null) { c.x = nx; c.y = ny; c.h = f; c.walking = true; }
   else c.walking = false;
 }
@@ -146,9 +202,12 @@ function chase(L: Level, c: Critter, dt: number, ctx: CritterCtx): void {
 /** Creatures amble around their post: a stand-in until the game's AI is ported. Hostile ones close in. */
 export function updateCritters(L: Level, dt: number, ctx: CritterCtx): void {
   const rng = ctx.rng;
-  for (const c of L.critters) {
-    const n = c.o.npc;
-    if (n && n.goal === 5 && n.gtarg === 1) { chase(L, c, dt, ctx); continue; } // turned hostile (a refused demand, a script)
+  for (const c of [...L.critters]) {
+    if (c.act) { stepAct(c, dt, ctx); continue; }
+    if (c.dying) continue;
+    if (c.para && c.para > 0) { c.para = Math.max(0, c.para - dt); c.walking = false; continue; }
+    const pd = Math.hypot(ctx.px - c.x, ctx.py - c.y);
+    if (ctx.hostile(c, pd)) { fight(L, c, dt, ctx, pd); continue; }
     if (c.wait > 0) {
       c.wait -= dt; c.walking = false;
       if (c.wait <= 0) { const a = rng() * Math.PI * 2, r = 0.4 + rng() * 1.4; c.tx = c.hx + Math.sin(a) * r; c.ty = c.hy + Math.cos(a) * r; }
