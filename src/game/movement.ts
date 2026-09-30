@@ -5,6 +5,7 @@ import { updateCritters } from '../world/creatures';
 import type { Game } from './game';
 import { isHostile, npcStrike, pickAttack, removeDead, tickMissiles, tickSwing } from './combat';
 import { status, tickTimers } from './magic';
+import { SFX, footsteps, sfx, tickMusic } from './sound';
 
 /**
  * One simulation step: the Avatar walks (sliding along walls), jumps and falls, creatures move, and move triggers fire
@@ -14,6 +15,7 @@ import { status, tickTimers } from './magic';
  * and fly hover and climb or sink where you look as you walk.
  */
 export function update(game: Game, dt: number): void {
+  tickMusic(game, dt);
   if (game.talk || game.dead) return;
   game.minutes += dt;
   const L = game.L, P = game.pose, inp = game.input, st = status(game);
@@ -27,6 +29,7 @@ export function update(game: Game, dt: number): void {
   // if something moved into us (a creature, a closing door), let any move through that stays on the floor
   const stuck = game.blocked(P.x, P.z, P.y);
   const ok = (x: number, z: number) => { if (!stuck) return !game.blocked(x, z, P.y); const fl = L.floorAt(x, z); return fl != null && fl <= P.y + STEP; };
+  const x0 = P.x, z0 = P.z, vy0 = P.vy, wasUp = P.y;
   for (let i = 0; i < steps; i++) {
     const sx = mx / steps, sz = mz / steps;
     if (ok(P.x + sx, P.z + sz)) { P.x += sx; P.z += sz; }
@@ -45,6 +48,8 @@ export function update(game: Game, dt: number): void {
     if (P.y <= fl) { P.y = fl; P.vy = 0; }
   } else if (P.y < fl) { P.y = Math.min(fl, P.y + Math.max(dt * 4, (fl - P.y) * 0.5)); P.vy = 0; }
   else P.vy = 0;
+  if (!flying && vy0 < -3 && P.vy === 0 && P.y <= fl + 0.001 && wasUp > fl) sfx(game, SFX.landing, Math.max(-0x3c, Math.round(-vy0 * 6) - 0x3c)); // landed from a fall
+  if (!flying && P.y <= fl + 0.001) footsteps(game, Math.hypot(P.x - x0, P.z - z0), dt, inp.run);
 
   updateCritters(L, dt, {
     rng: game.rng, px: P.x, py: -P.z,

@@ -4,7 +4,10 @@ import {
   DataError, LEVEL_BYTES, LIMITS, decodeLevel, readArk, readConv, readCritPage, readGR, readModels, readStrings, rleDecode,
   uw2CompressLiteral, uw2Decompress, writeArk, writeGR, writeStrings, readObjectsDat, readComObj,
   CUTS_ARGS, readCutsScript, readLpf, readVoc, writeCutsScript, writeLpf, writeVoc,
+  readSoundsDat, readTimbres, readXmi, writeSoundsDat, writeTimbres, writeXmi,
 } from '../../src/formats';
+import { FmDriver, TimbreBank, XmiPlayer } from '../../src/audio/music';
+import { DRUM, ORGAN } from '../helpers/synthSound';
 import { CutscenePlayer } from '../../src/cuts/player';
 import { synthHost } from '../helpers/synthCuts';
 import { ConvVM } from '../../src/conv/vm';
@@ -245,8 +248,34 @@ describe('OBJECTS.DAT and COMOBJ.DAT', () => {
     fc.assert(fc.property(bytes(4096), b => {
       const o = readObjectsDat(b), c = readComObj(b);
       expect([o.weapons.length, o.ranged.length, o.armour.length, o.critters.length, c.length]).toEqual([16, 16, 32, 64, 512]);
+      expect([o.containers.length, o.lights.length, o.food.length]).toEqual([16, 16, 16]);
       for (const k of o.critters) { expect(k.attacks).toHaveLength(3); k.toughness.forEach(t => expect(t).toBeGreaterThanOrEqual(-128)); }
       for (const r of c) { expect(r.radius).toBeLessThan(8); expect(r.mass).toBeLessThan(4096); }
     }), RUNS);
+  });
+});
+
+describe('sound data', () => {
+  const sounds = writeSoundsDat([{ patch: 1, note: 60, velocity: 90, duration: 300 }, { patch: 2, note: 50, velocity: 70, duration: 0xffff }]);
+  const bank = writeTimbres([ORGAN, DRUM]);
+  const song = writeXmi({ timbres: [{ patch: 0, bank: 0 }], events: [
+    { tick: 0, data: [0xb0, 114, 0] }, { tick: 0, data: [0xc0, 0] }, { tick: 0, data: [0x90, 60, 100], dur: 90 },
+    { tick: 30, data: [0xe0, 0, 80] }, { tick: 40, data: [0x99, 36, 120], dur: 5 }, { tick: 200, data: [0xb0, 7, 40] },
+  ] });
+  it('SOUNDS.DAT and timbre banks parse or throw DataError', () => {
+    fc.assert(fc.property(fc.oneof(bytes(), mutated(sounds)), b => { const r = hostile(() => readSoundsDat(b)); if (!(r instanceof DataError)) { expect(r.length).toBeLessThanOrEqual(255); for (const e of r) expect(e.velocity).toBeLessThan(128); } }), RUNS);
+    fc.assert(fc.property(fc.oneof(bytes(), mutated(bank)), b => { const r = hostile(() => readTimbres(b)); if (!(r instanceof DataError)) expect(r.length).toBeLessThanOrEqual(LIMITS.maxTimbres); }), RUNS);
+  });
+  it('XMI songs parse or throw DataError, and whatever parses plays through the synth without throwing', () => {
+    const fm = new TimbreBank([ORGAN, DRUM]);
+    fc.assert(fc.property(fc.oneof(bytes(), mutated(song)), b => {
+      const x = hostile(() => readXmi(b));
+      if (x instanceof DataError) return;
+      expect(x.events.length).toBeLessThanOrEqual(LIMITS.maxXmiEvents);
+      for (const e of x.events) for (const v of e.data.slice(1)) expect(v).toBeLessThan(128);
+      const p = new XmiPlayer(x, new FmDriver(fm, 8000), true), l = new Float32Array(800), r = new Float32Array(800);
+      p.render(l, r);
+      expect(l.every(Number.isFinite)).toBe(true);
+    }), { numRuns: 150 });
   });
 });

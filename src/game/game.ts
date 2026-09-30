@@ -1,3 +1,4 @@
+import type { ObjRec } from '../formats';
 import type { GameData } from '../data/gamedata';
 import { S1, levelName } from '../data/text';
 import { mathRng, type Rng } from '../core/rng';
@@ -10,6 +11,7 @@ import { nullUi, type UiPort } from './ports';
 import type { TalkSession } from './talk';
 import { newSwing, type Missile, type SwingState } from './combat';
 import { newMagic, type MagicState } from './magic';
+import { levelMusic, newMusic, releaseMusic, type MusicState } from './sound';
 
 /** Conversation memory that outlives a talk: per-NPC private globals, quest flags, x_clock clocks, x_traps variables. */
 export interface ConvState { g: Record<number, number[]>; q: number[]; c: number[]; t: number[] }
@@ -30,6 +32,8 @@ export interface Input { forward: number; strafe: number; turn: number; run: boo
  *   session  talk (an open conversation), mode (command icon), rng
  *   combat   swing (the Avatar's attack), missiles (in flight on this level), poison, dead
  *   magic    runes, shelf, lasting effects, a spell waiting to be aimed; timers (the 20-second clock)
+ *   items    useOn (a key, lockpick or other tool waiting for its target), hunger, drunk
+ *   sound    music (what plays and why), steps (the footstep clock)
  */
 export class Game {
   ui: UiPort = nullUi();
@@ -52,6 +56,10 @@ export class Game {
   /** Poison strength (lost one a minute, doing that much damage). */
   poison = 0;
   dead = false;
+  /** An inventory item waiting to be used on something the Avatar points at next. */
+  useOn: ObjRec | null = null;
+  music: MusicState = newMusic();
+  readonly steps = { t: 0, foot: 0 };
   /** The 20-second clock: seconds into the current tick, and ticks (mod 60). */
   timers = { t: 0, n: 0 };
   /** The last rendered view, for picking: aspect ratio and vertical field of view. */
@@ -84,6 +92,7 @@ export class Game {
     if (this.level) { this.visited[this.level.n] = { x: P.x, z: P.z, yaw: P.yaw }; this.snapshotLevel(); }
     this.loadLevel(n);
     this.ui.levelChanged(n);
+    levelMusic(this);
     if (!place) return;
     const v = this.visited[n];
     if (v) { P.x = v.x; P.z = v.z; P.yaw = v.yaw; P.y = this.L.floorAt(P.x, P.z) ?? 0; P.tile = Math.floor(-P.z) * 64 + Math.floor(P.x); this.unstick(); }
@@ -179,7 +188,7 @@ export class Game {
   newGame(pl: PlayerStats): void {
     this.stats = pl; this.inv.clear(); this.levelStates = {}; this.visited = {}; this.level = null;
     this.conv = newConvState(); this.minutes = 0;
-    this.resetCombat(); this.magic = newMagic();
+    this.resetCombat(); this.magic = newMagic(); this.useOn = null; releaseMusic(this);
     this.goLevel(0);
     this.setPlayer(pl);
     this.ui.inventoryChanged();

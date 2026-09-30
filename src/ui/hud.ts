@@ -1,7 +1,9 @@
 import { S1, levelName } from '../data/text';
 import type { Game, Mode } from '../game/game';
-import { slotClick } from '../game/interact';
-import type { SlotKey } from '../game/inventory';
+import { closeContainer, slotClick } from '../game/interact';
+import { BAG, isStack, qty, type SlotKey } from '../game/inventory';
+import { carried, carryLimit, putInto } from '../game/items';
+import type { AudioOut } from './audio';
 import type { CutsceneEnd, TalkView, UiPort } from '../game/ports';
 import { RUNE_STONE, cancelEffect, castShelf, clearShelf, runeName, selectRune } from '../game/magic';
 import type { Art } from './art';
@@ -18,8 +20,36 @@ const CMDS: [Mode | 'options', string][] = [['options', 'Options'], ['talk', 'Ta
 const RUNE_X = [15.5, 32.1, 49.3, 65.7], RUNE_Y = [12.8, 27.5, 42.1, 56.8, 71.5, 86.5], RUNES_AWAY = { x0: 20, x1: 60.5, y0: 92.4, y1: 108.1 };
 /** SPELLS.GR icon for an effect: base by major class (UW2's table from the executable; -1 means minor - 1), + minor. */
 const SPELL_ICON = [0x14, -1, 0x13, 0x05, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x11, 0x80, 0x80, 0x80, 0x80];
+/** Shoulder, hand and bag slot centres on PANELS.GR 0 (panel pixels). */
 const SLOTS: [SlotKey, number, number][] = [['shl', 16.5, 12.5], ['shr', 64.5, 12.5], ['hl', 12.5, 35], ['hr', 68, 35],
   ...[12.5, 31, 50, 68].map((x, i): [SlotKey, number, number] => [('b' + i) as SlotKey, x, 80.5]), ...[12.5, 31, 50, 68].map((x, i): [SlotKey, number, number] => [('b' + (i + 4)) as SlotKey, x, 99.5])];
+/**
+ * The paperdoll's worn pieces: where ARMOR_M/F.GR art is drawn (top left) and the areas that take a tap (centre and
+ * half sizes), from UnderworldGodot's layout of the same art, placed relative to the body picture (BODIES.GR at 22, 3).
+ * Rings show their OBJECTS.GR icon centred. Gloves have one area per hand.
+ */
+const BODY_AT = [22, 3] as const;
+const DOLL: { k: SlotKey; art?: [number, number]; hit: [number, number, number, number][] }[] = [
+  { k: 'rgl', hit: [[24.25, 51, 7, 7]] }, { k: 'rgr', hit: [[55.25, 51, 7, 7]] },
+  { k: 'gloves', art: [1, 33], hit: [[29, 44.75, 4, 4], [51, 44.75, 4, 4]] },
+  { k: 'helm', art: [7.25, 0], hit: [[39.25, 13, 8, 8]] },
+  { k: 'legs', art: [8, 13], hit: [[40, 52.25, 6.25, 11.25]] },
+  { k: 'body', art: [2.25, 12], hit: [[39.25, 30.25, 8.75, 10]] },
+  { k: 'boots', art: [6, 55], hit: [[38.5, 65, 10.5, 7]] },
+];
+/** An open container's picture (a tap closes it) and the scroll arrows (BUTTONS.GR 27 up, 28 down). */
+const OPENED = [13.5, 65] as const, ARROWS = [[62.5, 65], [72.5, 65]] as const;
+/** The weight still carriable, in stones (centred there in the 5x6 font). */
+const WEIGHT_AT = [69.5, 47] as const;
+/** Draw order: legs, boots, body, gloves, helm (the helm and gloves over the armour). */
+const DRAW_ORDER: SlotKey[] = ['legs', 'boots', 'body', 'gloves', 'helm'];
+
+/** ARMOR_M/F.GR picture for a worn item (the original's wearable.GetSpriteIndex; the circlet continues its run). */
+export function armourArt(id: number, q: number): number {
+  if (id >= 0x30 && id <= 0x34) return 61 + (id & 15);
+  if ((id & 15) < 15) return (q >> 4) * 15 + (id & 15);
+  return 60;
+}
 
 export class Hud implements UiPort {
   private msgTimer = 0;
@@ -33,6 +63,7 @@ export class Hud implements UiPort {
   onVictory: () => void = () => {};
   onDied: () => void = () => {};
   cuts: CutsceneView | null = null;
+  audio: AudioOut | null = null;
   /** The eyes: frame shown, frame heading for, seconds since the last blow, step timer. Power gem frame drawn. */
   private eye = { cur: 0, to: 0, since: 0, step: 0 };
   private powerK = -1;
@@ -79,6 +110,8 @@ export class Hud implements UiPort {
     this.hurtTimer = window.setTimeout(() => (h.style.opacity = '0'), 120);
   }
   died(): void { releasePointer(); this.onDied(); }
+  sound(id: number, vol: number, pan: number): void { this.audio?.sound(id, vol, pan); }
+  music(theme: number, loop: boolean): void { this.audio?.music(theme, loop); }
 
   // ---------- set-up ----------
   init(): void {
@@ -102,7 +135,14 @@ export class Hud implements UiPort {
     this.layout(); this.updateHeld(); this.drawPanel(); this.drawFlasks();
     $('#bBag').onclick = () => this.togglePanel();
     $('#chain').onclick = () => { this.panelPage = this.panelPage === 0 ? 1 : 0; this.drawPanel(); };
-    $('#pcv').addEventListener('pointerdown', e => this.panelClick(e));
+    $('#pcv').addEventListener('pointerdown', e => { if (e.pointerType !== 'touch') this.panelClick(e); else this.press = { t: performance.now(), x: e.clientX, y: e.clientY }; });
+    $('#pcv').addEventListener('pointerup', e => { // touch: a tap acts, a long press picks up
+      const p = this.press;
+      this.press = null;
+      if (e.pointerType !== 'touch' || !p || Math.hypot(e.clientX - p.x, e.clientY - p.y) > 12) return;
+      this.panelClick(e, performance.now() - p.t > 450);
+    });
+    $('#pcv').addEventListener('contextmenu', e => e.preventDefault());
     $('#shelf').onclick = () => castShelf(this.game);
     $('#spells').querySelectorAll('canvas').forEach((c, k) => ((c as HTMLCanvasElement).onclick = () => { if (this.game.mode === 'look') this.say('A spell is at work on you.'); else cancelEffect(this.game, k); }));
     this.drawShelf(); this.drawSpells();
@@ -190,14 +230,7 @@ export class Hud implements UiPort {
     x.imageSmoothingEnabled = false; x.clearRect(0, 0, 79, 112);
     $('#chain').setAttribute('aria-label', this.panelPage ? 'Show inventory' : 'Show character');
     const pl = this.game.stats;
-    if (this.panelPage === 0) {
-      if (A.panels) x.drawImage(A.canvas(A.panels[0]!), 0, 0);
-      else { x.fillStyle = '#2a2620'; x.fillRect(0, 0, 79, 112); x.strokeStyle = '#6a6254'; for (const [, sx, sy] of SLOTS) { x.beginPath(); x.arc(sx, sy, 7.5, 0, 7); x.stroke(); } }
-      const bd = A.bodies?.[pl?.body ?? 0];
-      if (bd) x.drawImage(A.canvas(bd), 22, 3);
-      for (const [k, sx, sy] of SLOTS) { const o = this.game.inv.get(k), c = o ? A.icon(o.id) : null; if (c) x.drawImage(c, Math.round(sx - c.width / 2), Math.round(sy - c.height / 2)); }
-      return;
-    }
+    if (this.panelPage === 0) { this.drawInventory(x); return; }
     if (this.panelPage === 2) { this.drawRunes(x); return; }
     if (A.panels?.[2]) x.drawImage(A.canvas(A.panels[2]), 0, 0); else { x.fillStyle = '#2a2620'; x.fillRect(0, 0, 79, 112); }
     const v = A.ink;
@@ -214,13 +247,76 @@ export class Hud implements UiPort {
     });
   }
 
-  private panelClick(e: PointerEvent): void {
+  private press: { t: number; x: number; y: number } | null = null;
+
+  private panelClick(e: PointerEvent, long = false): void {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect(), px = ((e.clientX - r.left) / r.width) * 79, py = ((e.clientY - r.top) / r.height) * 112;
     e.preventDefault();
     if (this.panelPage === 2) { this.runeClick(px, py); return; }
     if (this.panelPage === 1) { if (py > 101) { this.skillPage = Math.max(0, this.skillPage + (px < 39 ? -1 : 1)); this.drawPanel(); } return; }
+    this.inventoryClick(px, py, { one: e.shiftKey, take: e.button === 2 || long });
+  }
+
+  /** The inventory page: panel, body, worn armour, rings, the eight bag places (or an open container's), weight. */
+  private drawInventory(x: CanvasRenderingContext2D): void {
+    const A = this.art, inv = this.game.inv, pl = this.game.stats;
+    if (A.panels) x.drawImage(A.canvas(A.panels[0]!), 0, 0);
+    else { x.fillStyle = '#2a2620'; x.fillRect(0, 0, 79, 112); x.strokeStyle = '#6a6254'; for (const [, sx, sy] of SLOTS) { x.beginPath(); x.arc(sx, sy, 7.5, 0, 7); x.stroke(); } }
+    const bd = A.bodies?.[pl?.body ?? 0];
+    if (bd) x.drawImage(A.canvas(bd), BODY_AT[0], BODY_AT[1]);
+    const female = pl ? pl.sex === 1 || pl.body >= 5 : false, art = A.armour[female ? 1 : 0];
+    for (const k of DRAW_ORDER) {
+      const o = inv.get(k), d = DOLL.find(q => q.k === k)!, im = o ? art?.[armourArt(o.id, o.q)] : null;
+      if (o && im && d.art) x.drawImage(A.canvas(im), Math.round(BODY_AT[0] + d.art[0]), Math.round(BODY_AT[1] + d.art[1]));
+      else if (o) this.icon(x, o.id, d.hit[0]![0], d.hit[0]![1]); // no armour art: the item's own icon
+    }
+    for (const k of ['rgl', 'rgr'] as const) { const o = inv.get(k); if (o) this.icon(x, o.id, DOLL.find(q => q.k === k)!.hit[0]![0], 51); }
+    const open = inv.container;
+    for (const [k, sx, sy] of SLOTS) {
+      const bag = BAG.indexOf(k as never), o = bag >= 0 ? inv.bagAt(bag) : inv.get(k);
+      if (!o) continue;
+      this.icon(x, o.id, sx, sy);
+      if (isStack(o) && qty(o) > 1) this.qtyLabel(x, qty(o), sx, sy);
+    }
+    if (open) {
+      this.icon(x, open.id, OPENED[0], OPENED[1]);
+      const B = A.buttons;
+      ARROWS.forEach(([ax, ay], i) => { const im = B?.[27 + i]; if (im) x.drawImage(A.canvas(im), Math.round(ax - im.w / 2), Math.round(ay - im.h / 2)); else A.text(x, i ? 'v' : '^', ax, ay - 3, A.ink || 15, 'center'); });
+    }
+    if (pl) A.text(x, String(Math.max(0, Math.floor((carryLimit(this.game) - carried(this.game)) / 10))), WEIGHT_AT[0], WEIGHT_AT[1], A.ink || 15, 'center');
+  }
+
+  private icon(x: CanvasRenderingContext2D, id: number, cx: number, cy: number): void {
+    const c = this.art.icon(id);
+    if (c) x.drawImage(c, Math.round(cx - c.width / 2), Math.round(cy - c.height / 2));
+  }
+
+  private qtyLabel(x: CanvasRenderingContext2D, n: number, cx: number, cy: number): void {
+    const A = this.art, t = String(n), w = A.textW(t);
+    x.fillStyle = 'rgba(0,0,0,.55)'; x.fillRect(Math.round(cx + 8 - w) - 1, Math.round(cy + 1), w + 1, 7);
+    A.text(x, t, cx + 8, cy + 2, A.ink || 15, 'right');
+  }
+
+  /** A tap on the inventory page at panel pixel (px, py). */
+  inventoryClick(px: number, py: number, o: { one?: boolean; take?: boolean } = {}): void {
+    const g = this.game, inv = g.inv;
+    if (inv.container) {
+      if (Math.hypot(px - OPENED[0], py - OPENED[1]) < 8) {
+        if (!inv.held) closeContainer(g);
+        else if (putInto(g, inv.container, inv.held)) { inv.held = null; g.ui.inventoryChanged(); }
+        return;
+      }
+      const ar = ARROWS.findIndex(([ax, ay]) => Math.abs(px - ax) < 5 && Math.abs(py - ay) < 6);
+      if (ar >= 0) { inv.scrollBy(ar ? 1 : -1); this.drawPanel(); return; }
+    }
     const sl = SLOTS.find(([, sx, sy]) => Math.hypot(sx - px, sy - py) < 9);
-    if (sl && slotClick(this.game, sl[0]) === 'runes') this.openRunes();
+    if (sl) { if (slotClick(g, { slot: sl[0] }, o) === 'runes') this.openRunes(); return; }
+    let best: SlotKey | null = null, bd = Infinity;
+    for (const d of DOLL) for (const [cx, cy, hw, hh] of d.hit) {
+      const nx = (px - cx) / hw, ny = (py - cy) / hh, dd = Math.max(Math.abs(nx), Math.abs(ny));
+      if (dd <= 1 && dd < bd) { bd = dd; best = d.k; }
+    }
+    if (best) { if (slotClick(g, { slot: best }, o) === 'runes') this.openRunes(); }
   }
 
   // ---------- magic: the rune bag (PANELS 1), the shelf, active spells ----------

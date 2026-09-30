@@ -25,10 +25,16 @@ export const BED = { x: 35, y: 29 };
 export const MONSTER = { x: 33, y: 31, id: 0x46, hp: 20 };
 export const RUNEBAG = { x: 29, y: 29 };
 export const RUNES = { x: 29, y: 30, ids: [0xe8 + 8, 0xe8 + 11] };
+/**
+ * With { items: true }: a sack (0x80) holding an apple, a torch and a pouch (0x82) with key 5 in it; a leather vest
+ * and a leather cap; a red potion whose linked spell object names Lesser Heal (runic spell 11); a barrel holding 12
+ * gold coins; and the door locked by a lock (height 4) that key 5 fits.
+ */
+export const ITEMS = { bag: { x: 30, y: 32 }, armour: { x: 31, y: 33 }, potion: { x: 29, y: 34 }, barrel: { x: 35, y: 33 }, key: 5 };
 
 const u16 = (a: number[] | Uint8Array, o: number, v: number) => { a[o] = v & 255; a[o + 1] = (v >> 8) & 255; };
 
-function level0(combat = false): Uint8Array {
+function level0(combat = false, items = false): Uint8Array {
   const L = new Uint8Array(0x7e08);
   const tile = (x: number, y: number, type: number, h = 0, floor = 1, wall = 2) => { const i = (y * 64 + x) * 4; u16(L, i, type | (h << 4) | (floor << 10)); u16(L, i + 2, wall); };
   for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) tile(x, y, 0);
@@ -50,12 +56,25 @@ function level0(combat = false): Uint8Array {
   first(NPC.x, NPC.y, 1);
   obj(257, { id: 0x136 }); first(START.x, START.y, 257);                 // Miranda's summons: the start tile
   obj(258, { id: 0x01 }); first(SWORD.x, SWORD.y, 258);                  // a sword
-  obj(259, { id: 0x140, hd: 0, fy: 0, fx: 3 }); first(DOOR.x, DOOR.y, 259); // a door on the tile's south edge
+  obj(259, { id: 0x140, hd: 0, fy: 0, fx: 3, link: items ? 280 : 0 }); first(DOOR.x, DOOR.y, 259); // a door on the tile's south edge
   obj(260, { id: 0x1a0, link: 261 }); first(TRIGGER.x, TRIGGER.y, 260);    // move trigger -> teleport trap
   obj(261, { id: 0x181, q: TRIGGER.destX, own: TRIGGER.destY, z: 0 });
   obj(262, { id: 0x161, hd: 0, fx: 3, fy: 7, z: 40 }); first(33, ROOM.y1, 262); // a lever on the north wall
   obj(263, { id: 0x166, hd: 4, fx: 3, fy: 0, z: 40, isq: 1, link: 0x200 }); first(33, ROOM.y0, 263); // wall writing (block 8, 0)
   obj(264, { id: 0x167 }); first(BED.x, BED.y, 264);                     // a bed
+  if (items) {
+    obj(268, { id: 0x80, link: 269 }); first(ITEMS.bag.x, ITEMS.bag.y, 268);                // a sack:
+    obj(269, { id: 0xb3, q: 40, next: 270 });                                               //   an apple,
+    obj(270, { id: 0x91, q: 30, next: 271 });                                               //   an unlit torch,
+    obj(271, { id: 0x82, link: 272 });                                                      //   a pouch with
+    obj(272, { id: 0x102, own: ITEMS.key });                                                //     key 5
+    obj(273, { id: 0x20, q: 40, next: 274 }); obj(274, { id: 0x2c, q: 40 }); first(ITEMS.armour.x, ITEMS.armour.y, 273); // vest, cap
+    obj(275, { id: 0xe1, link: 276 }); first(ITEMS.potion.x, ITEMS.potion.y, 275);          // a potion
+    obj(276, { id: 0x120, link: 11 });                                                      //   its spell: Lesser Heal
+    obj(277, { id: 0x15b, link: 278 }); first(ITEMS.barrel.x, ITEMS.barrel.y, 277);         // a barrel with
+    obj(278, { id: 0xa0, isq: 1, link: 12 });                                               //   12 coins
+    obj(280, { id: 0x10f, fl: 1, z: 4, link: ITEMS.key });                                  // the door's lock
+  }
   if (combat) {
     const m = obj(2, { id: MONSTER.id, hd: 0 }); // attitude 0, goal 0: it attacks once it sees the Avatar
     L[m + 8] = MONSTER.hp; u16(L, m + 0x16, (MONSTER.x << 10) | (MONSTER.y << 4));
@@ -145,8 +164,22 @@ function synthCrit(): GameFiles {
   return { 'CRIT/AS.AN': as, 'CRIT/CR.AN': new Uint8Array(512), 'CRIT/CR00.00': new Uint8Array(0x80 + 512) };
 }
 
-/** Every file the engine reads, synthetic. { combat }: adds the monster, runes, OBJECTS.DAT, COMOBJ.DAT and CRIT. */
-export function synthFiles(opts: { combat?: boolean } = {}): GameFiles {
+/** OBJECTS.DAT with the item tables: armour, a sack of 20 stones' capacity, a pouch for keys only, torch light, food. */
+export function synthItemsDat(): Uint8Array {
+  const armour = Array.from({ length: 32 }, () => ({}));
+  armour[0] = { protection: 3 }; armour[0xc] = { protection: 2 }; armour[0x1c] = { protection: 4 }; // vest, cap, a shield
+  const containers = Array.from({ length: 16 }, () => ({ capacity: 0, accepts: -1 }));
+  containers[0] = { capacity: 200, accepts: -1 }; containers[1] = { capacity: 200, accepts: -1 }; containers[2] = { capacity: 10, accepts: 516 };
+  const lights = Array.from({ length: 16 }, () => ({}));
+  lights[5] = { duration: 10, brightness: 3 };
+  const food = Array(16).fill(0); food[3] = 30; food[12] = -5;
+  const d = writeObjectsDat({ armour, containers, lights, food }), w = synthObjectsDat();
+  d.set(w.subarray(2, 0xb2), 2); d.set(w.subarray(0x132, 0xd32), 0x132); // the combat tables as well
+  return d;
+}
+
+/** Every file the engine reads, synthetic. { combat }: adds the monster, runes, OBJECTS.DAT, COMOBJ.DAT and CRIT; { items }: see ITEMS. */
+export function synthFiles(opts: { combat?: boolean; items?: boolean } = {}): GameFiles {
   const pals = new Uint8Array(768);
   for (let i = 0; i < 256; i++) { pals[i * 3] = (i * 7) & 63; pals[i * 3 + 1] = (i * 3) & 63; pals[i * 3 + 2] = (i * 5) & 63; }
   const light = new Uint8Array(4096);
@@ -154,7 +187,7 @@ export function synthFiles(opts: { combat?: boolean } = {}): GameFiles {
   const allpals = new Uint8Array(16 * 32);
   for (let i = 0; i < allpals.length; i++) allpals[i] = i & 255;
   const blocks: (Uint8Array | null)[] = Array(320).fill(null);
-  blocks[0] = level0(!!opts.combat); blocks[80] = texmap();
+  blocks[0] = level0(!!opts.combat, !!opts.items); blocks[80] = texmap();
   const objs = Array.from({ length: 512 }, (_, i) => img(8, 8, 32 + (i % 200)));
   const cnv: (Uint8Array | null)[] = Array(2).fill(null);
   cnv[1] = synthConversation();
@@ -169,6 +202,10 @@ export function synthFiles(opts: { combat?: boolean } = {}): GameFiles {
     'STRINGS.PAK': synthStrings(),
     'TMOBJ.GR': writeGR(Array.from({ length: 54 }, (_, i) => img(16, 16, 100 + i))),
     'CNV.ARK': writeArk(cnv, uw2CompressLiteral),
+    ...(opts.items ? {
+      'OBJECTS.DAT': synthItemsDat(),
+      'COMOBJ.DAT': writeComObj({ 0x80: { mass: 5 }, 0x82: { mass: 1 }, 0xb3: { mass: 2 }, 0x91: { mass: 10 }, 0x102: { mass: 1 }, 0x20: { mass: 50 }, 0x2c: { mass: 20 }, 0xa0: { mass: 1 }, 0xe1: { mass: 4 }, 0x01: { mass: 60 } }),
+    } : {}),
     ...(opts.combat ? {
       ...synthCrit(), 'OBJECTS.DAT': synthObjectsDat(),
       'COMOBJ.DAT': writeComObj({ 1: { radius: 2 }, 15: { radius: 1 }, [MONSTER.id]: { height: 32, radius: 2 }, 127: { height: 24 } }),

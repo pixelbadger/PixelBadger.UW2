@@ -15,6 +15,8 @@ export interface Tile {
   floor: number;
   wall: number;
   first: number;
+  /** Bit 8: flips the level's ambient light here (DL.DAT). */
+  light: number;
 }
 
 /**
@@ -99,7 +101,7 @@ export function decodeLevel(L: Uint8Array, TM: Uint8Array | null | undefined, n:
     const type = w0 & 15, h = (w0 >> 4) & 15;
     const c: [number, number, number, number] = [h, h, h, h];
     if (type === 6) { c[2]++; c[3]++; } else if (type === 7) { c[0]++; c[1]++; } else if (type === 8) { c[1]++; c[2]++; } else if (type === 9) { c[0]++; c[3]++; }
-    tiles[i] = { type, h, c, floor: texmap[(w0 >> 10) & 15]!, wall: texmap[w1 & 63]!, first: w1 >> 6 };
+    tiles[i] = { type, h, c, floor: texmap[(w0 >> 10) & 15]!, wall: texmap[w1 & 63]!, first: w1 >> 6, light: (w0 >> 8) & 1 };
   }
   const all: ObjRec[] = [], props: ObjRec[] = [], objs: ObjRec[] = [], doors: ObjRec[] = [];
   const triggers = new Map<number, MoveTrigger>(), seen = new Set<number>();
@@ -122,5 +124,24 @@ export function decodeLevel(L: Uint8Array, TM: Uint8Array | null | undefined, n:
     let k = o.link;
     while (k && k < 1024 && !got.has(k) && o.items.length < 40 && got.size < LIMITS.maxChain) { got.add(k); const it = readObj(L, k, n); o.items.push(it); k = it.next; }
   }
+  // what loose objects, doors and storage furniture (barrels, chests, nightstands) hold: containers' contents,
+  // potions' and wands' spells, locks
+  const budget = { n: 0 };
+  for (const o of [...objs, ...doors, ...props.filter(p => p.id === 0x15b || p.id === 0x15d || p.id === 0x15e)]) if (!o.npc) linked(L, o, n, budget, 0);
   return { tiles, texmap, doorTex, all, props, objs, doors, triggers };
+}
+
+/** Decodes o's link chain into o.items (recursively, for containers in containers), within LIMITS.maxChain overall. */
+function linked(L: Uint8Array, o: ObjRec, n: number, budget: { n: number }, depth: number): void {
+  if (o.isq || !o.link || o.link >= 1024 || depth > 8) return;
+  const got = new Set<number>(), items: ObjRec[] = [];
+  let k = o.link;
+  while (k && k < 1024 && !got.has(k) && budget.n < LIMITS.maxChain) {
+    got.add(k); budget.n++;
+    const it = readObj(L, k, n);
+    if (it.npc) break; // a creature is never inside a thing
+    items.push(it); linked(L, it, n, budget, depth + 1);
+    k = it.next;
+  }
+  if (items.length) o.items = items;
 }

@@ -117,7 +117,11 @@ Carried over verbatim from the single-file engine's header (legacy/uw2-web-engin
    9 faction & 63, 0xA damages weapon on critical miss bit 0 / corpse 2-4 / swimmer 6 / flier 7,
    0xC speed, 0xD-0xE trading, 0xF poison, 0x11 base hit, 0x12 defence, 0x13 + 3k attack k (chance,
    damage, probability), 0x1E sight/hearing nibbles, 0x20-0x27 loot, u16 0x28 experience, 0x2A-0x2C
-   spells, 0x2D bit 0 caster. readObjectsDat.
+   spells, 0x2D bit 0 caster; 0xd32 containers 0x80-0x8f x 3 (capacity in tenths of a stone, s16
+   accepts: -1 anything, 512 runes, 513 missiles/wands, 514 scrolls/books, 515 food, 516 keys);
+   0xd62 lights 0x90-0x9f x 2 (duration, brightness); 0xd82 food 0xb0-0xbf x 1 (signed nutrition).
+   Byte 8 bits 0-2 of a creature: its death sound class. readObjectsDat. (The container, light and
+   food tables and the death sounds are NOT yet checked against the disc: docs/ITEMS.md.)
  - COMOBJ.DAT: u16 header, 11 bytes per id: height (1/32 tile), u16 radius bits 0-2 / mass 4-15,
    flags, u16 value at +4, quality class (+6 bits 2-3), damage resistances (+8: 1/2 magic, 4 physical,
    8 fire, 0x10 poison, 0x20 ice, 0x40 missiles, 0x80 paralysis-proof), render type (+9). readComObj.
@@ -125,6 +129,20 @@ Carried over verbatim from the single-file engine's header (legacy/uw2-web-engin
    (src/game/spells.ts); names STRINGS block 6, 256 + index. Rune stones 0xE8-0xFF, rune bag 0x8F,
    PANELS.GR 1 is the rune bag. POWER.GR (charge gem), EYES.GR (foe health), SPELLS.GR (effect icons:
    base 0x14/-1/0x13/5 for classes 0-3, 0x11 for 11, + minor). See docs/COMBAT.md.
+ - Level links (docs/ITEMS.md): a non-quantity object's link heads a chain (via next) of what it holds or
+   carries: a container's contents (nested), a potion's or wand's spell object 0x120 (its link names the
+   spell), a door's or chest's lock 0x10F (flag bit 0 locked, link & 63 the key; a key's owner field is
+   its number). Tile word 0 bit 8 flips the level's ambient light (DL.DAT: 80 bytes, 0-9, +10 inverted).
+
+ SOUND (UW2/SOUND; after UnderworldGodot and the Miles AIL formats; NOT yet checked against the disc:
+ docs/SOUND.md; the data test tests/data/sound.test.ts checks it when run with UW2_DATA)
+ - SOUNDS.DAT: u8 count, 8 bytes each: patch, note, velocity (base volume), u16 duration (big-endian),
+   3 unknown. SPnn.VOC / UWnn.VOC: the effects (VOC as the speech). readSoundsDat.
+ - UW.OPL: Global Timbre Library: 6-byte entries (patch, bank, u32 offset) until 0xFF; each timbre u16
+   size, s8 transpose, OPL registers mod 20/40/60/80/E0, C0, car 20/40/60/80/E0. readTimbres.
+ - UWAnn.XMI (nn octal theme number): IFF [FORM XDIR][CAT XMID] FORM XMID {TIMB (patch, bank) pairs,
+   EVNT}. EVNT: MIDI without running status; delays are sums of bytes < 0x80; note-ons carry a VLQ
+   length (no note-offs); 120 ticks a second; controller 114 picks the timbre bank. readXmi.
 
  CONVERSATIONS (verified by disassembling and running all 102 programs; uw2-conversations.md
  is the fuller spec, but it is WRONG on the points marked * below)

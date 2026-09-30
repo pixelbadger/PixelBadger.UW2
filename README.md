@@ -8,9 +8,11 @@ game data is included or uploaded: you bring your own disc.
 
 ## What works
 All 80 levels with original textures, lighting, doors, stairs, ladders and teleports; 3D furniture from `UW2.EXE`;
-animated creatures; books, scrolls and signs; get/hold/drop inventory; character creation; conversations (all 102
-programs) with trading; 4 save slots; automap; cutscenes with their speech and subtitles (the title, the introduction,
-dreams, the acknowledgements). Not yet: combat, item use/equipment, trap chains, magic, music and sound effects.
+animated creatures; books, scrolls and signs; the full inventory (paperdoll with worn armour and rings, containers you
+open and nest, weight, stacks, food, lights, keys and locks, potions and wands); character creation; conversations
+(all 102 programs) with trading; combat and the first spells; sound effects and the music, played through the game's
+own FM instruments; 4 save slots; automap; cutscenes with their speech and subtitles. Not yet: trap chains, most of
+the spells, enchanted equipment.
 
 ## Develop
 ```sh

@@ -112,12 +112,14 @@ describe('screens and palettes', () => {
 describe('cutscene data intake', () => {
   const cuts = synthCutsFiles();
   const folder = (prefix: string) => Object.fromEntries(Object.entries(cuts).filter(([k]) => k.startsWith(prefix)).map(([k, v]) => [k.slice(prefix.length), v]));
-  it('takes UW2/CUTS and the speech from UW2/SOUND out of a disc image, and nothing else there', () => {
-    const iso = writeIso({ data: synthFiles(), sub: { CUTS: { ...folder('CUTS/'), 'README.TXT': new Uint8Array(3) }, SOUND: { ...folder('SOUND/'), 'SP01.VOC': new Uint8Array(3), 'UW.AD': new Uint8Array(3) } } });
+  it('takes UW2/CUTS and the speech, effects and music from UW2/SOUND out of a disc image, and nothing else there', () => {
+    const iso = writeIso({ data: synthFiles(), sub: { CUTS: { ...folder('CUTS/'), 'README.TXT': new Uint8Array(3) }, SOUND: { ...folder('SOUND/'), 'SP01.VOC': new Uint8Array(3), 'UWA12.XMI': new Uint8Array(3), 'UW.OPL': new Uint8Array(3), 'SOUNDS.DAT': new Uint8Array(3), 'UW.MT': new Uint8Array(3), 'DRIVER.ADV': new Uint8Array(3) } } });
     const files = filesFromIso(iso);
     for (const k of Object.keys(cuts).filter(k => k.includes('/'))) expect(files[k], k).toEqual(cuts[k]);
     expect(files['CUTS/README.TXT']).toBeUndefined();
-    expect(files['SOUND/SP01.VOC']).toBeUndefined();
+    for (const k of ['SP01.VOC', 'UWA12.XMI', 'UW.OPL', 'SOUNDS.DAT']) expect(files['SOUND/' + k], k).toBeDefined();
+    expect(files['SOUND/UW.MT']).toBeUndefined();
+    expect(files['SOUND/DRIVER.ADV']).toBeUndefined();
     expect(hasCutscenes(files)).toBe(true);
     expect(hasCutscenes(filesFromIso(writeIso({ data: synthFiles() })))).toBe(false);
   });

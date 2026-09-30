@@ -39,8 +39,8 @@ been checked by play yet.
   (ours: within its sight nibble, 3-8 tiles, with a clear line); anything the Avatar swings at, hit or miss, turns hostile. Hostile
   creatures close in; in reach they decide 4 times a second (ours): 1 in 4 they attack (one of their three attacks,
   by the attacks' odds), otherwise they build up (the original's swing-charge table). The attack lands on animation
-  frame 3 (UW2's hit frame): chance + base/2 against the Avatar's Defense skill, damage + str/5, the Avatar's armour
-  from spells, halved on easy. Poisonous creatures may poison (the poison does its strength in damage each minute,
+  frame 3 (UW2's hit frame): chance + base/2 against the Avatar's Defense skill, damage + str/5, less the Avatar's
+  armour on the body part struck (worn pieces and resistance spells), halved on easy. Poisonous creatures may poison (the poison does its strength in damage each minute,
   one less each time). Casters with a projectile spell shoot from range (ours: 15% of decisions, within 8 tiles).
 - **Death**: a creature killed plays its death animation (group 7), then leaves the level with what it carried
   (spilled on its tile), fluids (0xD9 + n) and, 7 times in 16, a corpse (0xC0 + n; never in the Pits). The killer
@@ -76,12 +76,13 @@ been checked by play yet.
 
 ### Not built yet
 
-Armour and shields (no armour slots on the paperdoll yet; the Avatar's armour comes only from spells), weapon wear,
+Weapon and armour wear (worn armour and shields count: docs/ITEMS.md),
 weapon enchantments and on-hit spells, stealth and noise, creature morale and fleeing, pathfinding (creatures walk
 straight at you), ranged creatures other than casters, area spells (class 6), most targeted spells (class 7 other than
 paralyze), summoning and rune traps (class 8 other than create food), class 11/13 specials, dying NPCs' last words,
 Pits of Carnage fights (babl_hack 0/1/2/4), the guards Britannia's people call, skill points (levels do not yet give
-points to spend with trainers), sounds and music, blood splashes and hit flashes, the Avatar's weapon on screen.
+points to spend with trainers), blood splashes and hit flashes, the Avatar's weapon on screen. (Sounds and the combat
+music: docs/SOUND.md.)
 
 The placement of the power gem, the eyes and the spell icons on our full-bleed layout is ours, and their frame
 choice follows the reference (power: 1 + charge / 12, cycling 9-10 at full; eyes: 5-7 as the foe weakens, back to 0

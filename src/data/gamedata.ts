@@ -1,6 +1,6 @@
 import {
-  DataError, LIMITS, keepLargestBlob, need, readArk, readComObj, readConv, readGR, readModels, readObjectsDat, readStrings, u16, u32,
-  type ComObj, type ConvProgram, type Img, type Model, type ObjectsDat, type StringBlocks,
+  DataError, LIMITS, keepLargestBlob, need, readArk, readComObj, readConv, readGR, readModels, readObjectsDat, readSoundsDat, readStrings, u16, u32,
+  type ComObj, type ConvProgram, type Img, type Model, type ObjectsDat, type SoundEntry, type StringBlocks,
 } from '../formats';
 import type { GameFiles } from './files';
 
@@ -42,6 +42,7 @@ export class GameData {
   private convs: (ConvProgram | null)[] | null | undefined;
   private od: ObjectsDat | undefined;
   private co: ComObj[] | undefined;
+  private snd: SoundEntry[] | undefined;
 
   constructor(files: GameFiles) {
     this.files = files;
@@ -108,6 +109,20 @@ export class GameData {
   /** COMOBJ.DAT per object id (all zeros without the file). */
   get comObj(): ComObj[] { return (this.co ??= readComObj(this.files['COMOBJ.DAT'] ?? new Uint8Array(0))); }
   get hasObjDat(): boolean { return !!this.files['OBJECTS.DAT']; }
+  /** Does OBJECTS.DAT reach the container, light and food tables? (Without them containers have no limits.) */
+  get hasItemDat(): boolean { return (this.files['OBJECTS.DAT']?.length ?? 0) >= 0xd92; }
+
+  /** SOUNDS.DAT: each effect's base volume ([] without it or when it is damaged). */
+  get sounds(): SoundEntry[] {
+    if (this.snd === undefined) {
+      const f = this.files['SOUND/SOUNDS.DAT'];
+      try { this.snd = f ? readSoundsDat(f) : []; } catch (e) { if (!(e instanceof DataError)) throw e; this.snd = []; }
+    }
+    return this.snd;
+  }
+
+  /** DL.DAT: level n's ambient light (0-9, +10 when the tiles' light bit turns it off rather than on), or 0. */
+  ambient(n: number): number { return this.files['DL.DAT']?.[n] ?? 0; }
 
   /** A STRINGS.PAK string ('' when missing). */
   str(block: number, i: number): string { return (this.STR.get(block) ?? [])[i] ?? ''; }

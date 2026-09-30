@@ -14,7 +14,7 @@
   <p>Choose your <em>Ultima Underworld I &amp; II</em> disc image (.iso), or the files from its <code>UW2/DATA</code> folder. The game data is read here in your browser and kept on this device for next time; nothing is uploaded.</p>
   <label class="pickbtn" tabindex="0">Choose disc image<input id="pick" type="file" multiple hidden></label>
   <div id="status"></div><div id="err"></div>
-  <p class="fine">You can also drop the file anywhere on this page. Walk every level with its original textures, lighting, doors, stairs and ladders. Creatures are animated and wander about, and books, letters and signs can be read. You can pick things up and carry them, and talk with the people you meet. You can trade with them too. The cutscenes play with their speech. You can fight, and cast the first spells with the runes you find; armour and many spells are not built yet.</p>
+  <p class="fine">You can also drop the file anywhere on this page. Walk every level with its original textures, lighting, doors, stairs and ladders. Creatures are animated and wander about, and books, letters and signs can be read. You can pick things up and carry them, and talk with the people you meet. You can trade with them too. The cutscenes play with their speech. You can fight, and cast the first spells with the runes you find. Wear armour on the paperdoll, open bags and chests, eat, light torches and unlock doors with the right key. You hear the game's own sound effects and its music, played through its own instruments. Many spells are not built yet.</p>
 </div></div>
 <div id="game" hidden>
   <canvas id="view" class="chunky"></canvas>
@@ -36,8 +36,8 @@
   <div id="opts" class="modal" hidden role="dialog" aria-modal="true" aria-label="Options"><div class="stonecard">
     <h2>Options</h2>
     <label class="lv">Level<select id="lvl"></select></label>
-    <div class="grid"><button id="bSave" class="sbtn">Save game</button><button id="bLoad" class="sbtn">Load game</button><button id="bNew" class="sbtn">New character</button><button id="bMap" class="sbtn">Map</button><button id="bLight" class="sbtn">Lantern</button><button id="bPix" class="sbtn">320×200</button><button id="bData" class="sbtn" title="Forget the stored game data">Forget data</button></div>
-    <p class="keys">WASD move · Shift run · J jump · E act · G get · T talk · I inventory · M map · L light · Fight: hold click / Space, or P bash · ; slash · . stab · R rune bag · C cast · 1–9 reply · Esc close</p>
+    <div class="grid"><button id="bSave" class="sbtn">Save game</button><button id="bLoad" class="sbtn">Load game</button><button id="bNew" class="sbtn">New character</button><button id="bMap" class="sbtn">Map</button><button id="bLight" class="sbtn">Carried light</button><button id="bPix" class="sbtn">320×200</button><button id="bMusic" class="sbtn">Music: on</button><button id="bSfx" class="sbtn">Sounds: on</button><button id="bData" class="sbtn" title="Forget the stored game data">Forget data</button></div>
+    <p class="keys">WASD move · Shift run · J jump · E act · G get · T talk · I inventory · M map · L light · Fight: hold click / Space, or P bash · ; slash · . stab · R rune bag · C cast · 1–9 reply · Esc close · Inventory: tap to use (bags open) or take, right-click or long press to take, Shift takes one</p>
     <button id="bOptClose" class="sbtn wide">Return to game</button>
   </div></div>
   <div id="menu" class="modal" hidden role="dialog" aria-modal="true" aria-label="Main menu"><div class="stonecard">

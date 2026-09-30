@@ -6,6 +6,7 @@ import { newConvState, type ConvState, type Game } from './game';
 import { SLOT_KEYS, type SlotKey } from './inventory';
 import type { PlayerStats } from './player';
 import { newMagic } from './magic';
+import { releaseMusic } from './sound';
 
 // Saves: four slots like the original, kept in this browser. A save is plain data with an explicit schema version.
 // Loading goes: raw -> migrate (one step per version) -> validate -> apply. Anything that fails is rejected with a
@@ -17,16 +18,18 @@ import { newMagic } from './magic';
 //   2  {v, when, player, inventory, level, pose, visited, levels, conv, minutes}; objects carry `invis` and `items`.
 //   3  v2 + {magic: {runes, shelf, effects}, poison}. Creature hit points, hostility and deaths live in the level
 //      snapshots' NPC records (v2 already carried them); positions are still not saved (they reset to their posts).
+//   4  v3 + the full paperdoll (helm, body, gloves, legs, boots, rings rgl/rgr), containers' contents as `items`
+//      (carried or lying in levels, nested up to 8 deep), player.hunger (0-255) and player.drunk.
 
-export const SAVE_VERSION = 3;
+export const SAVE_VERSION = 4;
 export const SAVE_SLOTS = 4;
 
 export class SaveError extends Error { override name = 'SaveError'; }
 
 export interface SavedMagic { runes: boolean[]; shelf: number[]; effects: { major: number; minor: number; stab: number }[] }
 
-export interface SaveV3 {
-  v: 3;
+export interface SaveV4 {
+  v: 4;
   when: number;
   player: PlayerStats;
   inventory: Partial<Record<SlotKey | 'held', ObjRec | null>>;
@@ -69,7 +72,10 @@ function migrate1to2(d: Raw): Raw {
 /** v2 -> v3: no runes, no effects, no poison. */
 const migrate2to3 = (d: Raw): Raw => ({ ...d, v: 3, magic: { runes: Array(24).fill(false), shelf: [], effects: [] }, poison: 0 });
 
-const MIGRATIONS: Record<number, (d: Raw) => Raw> = { 1: migrate1to2, 2: migrate2to3 };
+/** v3 -> v4: the Avatar starts well fed; the old slots keep their names. */
+const migrate3to4 = (d: Raw): Raw => ({ ...d, v: 4, player: isObj(d.player) ? { hunger: 0xc0, drunk: 0, ...d.player } : d.player });
+
+const MIGRATIONS: Record<number, (d: Raw) => Raw> = { 1: migrate1to2, 2: migrate2to3, 3: migrate3to4 };
 
 /** Brings any known version up to SAVE_VERSION. */
 export function migrateSave(raw: unknown): Raw {
@@ -113,7 +119,7 @@ function checkObj(o: unknown, depth: number, count: { n: number }): ObjRec {
   if (o.ty !== undefined) int(o.ty, 0, 63, 'object tile');
   if (o.npc !== undefined) { if (!isObj(o.npc)) fail('NPC'); for (const k of NPC_KEYS) int((o.npc as Raw)[k], -32768, 65535, 'NPC'); }
   if (o.items !== undefined) {
-    if (!Array.isArray(o.items) || o.items.length > 256 || depth > 4) fail('NPC inventory');
+    if (!Array.isArray(o.items) || o.items.length > 256 || depth > 8) fail('contents');
     (o.items as unknown[]).forEach(it => checkObj(it, depth + 1, count));
   }
   return o as unknown as ObjRec;
@@ -129,6 +135,8 @@ function checkPlayer(p: unknown): PlayerStats {
   numArray(p.skills, 32, 'skills');
   if (p.exp !== null && p.exp !== undefined) num(p.exp, -1e9, 1e9, 'experience');
   if (p.level !== undefined) int(p.level, 1, 16, 'level');
+  if (p.hunger !== undefined) int(p.hunger, 0, 255, 'hunger');
+  if (p.drunk !== undefined) int(p.drunk, -255, 255, 'drink');
   return p as unknown as PlayerStats;
 }
 
@@ -143,7 +151,7 @@ function checkMagic(m: unknown): SavedMagic {
   return m as unknown as SavedMagic;
 }
 
-export function validateSave(d: Raw, levelExists: (n: number) => boolean): SaveV3 {
+export function validateSave(d: Raw, levelExists: (n: number) => boolean): SaveV4 {
   if (d.v !== SAVE_VERSION) fail('version');
   num(d.when, 0, 1e15, 'date');
   checkPlayer(d.player);
@@ -176,11 +184,11 @@ export function validateSave(d: Raw, levelExists: (n: number) => boolean): SaveV
   num(d.minutes, 0, 1e12, 'game clock');
   checkMagic(d.magic);
   int(d.poison, 0, 255, 'poison');
-  return d as unknown as SaveV3;
+  return d as unknown as SaveV4;
 }
 
 /** raw (from storage) -> a save this engine can load, or SaveError. */
-export function parseSave(raw: unknown, levelExists: (n: number) => boolean): SaveV3 {
+export function parseSave(raw: unknown, levelExists: (n: number) => boolean): SaveV4 {
   return validateSave(migrateSave(raw), levelExists);
 }
 
@@ -200,19 +208,19 @@ export function describeSave(raw: unknown): { title: string; when: string } | nu
 
 // ---------- to and from the game ----------
 
-export function makeSave(game: Game): SaveV3 {
+export function makeSave(game: Game): SaveV4 {
   game.snapshotLevel();
   const P = game.pose, L = game.L;
   game.visited[L.n] = { x: P.x, z: P.z, yaw: P.yaw };
   return {
-    v: 3, when: Date.now(), player: game.stats!, inventory: game.inv.toJSON(), level: L.n, pose: { x: P.x, y: P.y, z: P.z, yaw: P.yaw },
+    v: 4, when: Date.now(), player: game.stats!, inventory: game.inv.toJSON(), level: L.n, pose: { x: P.x, y: P.y, z: P.z, yaw: P.yaw },
     visited: game.visited, levels: game.levelStates, conv: game.conv, minutes: game.minutes,
     magic: { runes: game.magic.runes, shelf: game.magic.shelf, effects: game.magic.effects }, poison: game.poison,
   };
 }
 
 /** Replaces the game's state with a validated save. */
-export function applySave(game: Game, d: SaveV3): void {
+export function applySave(game: Game, d: SaveV4): void {
   game.stats = d.player;
   game.inv.load(d.inventory);
   game.levelStates = d.levels; game.visited = d.visited; game.level = null;
@@ -222,6 +230,8 @@ export function applySave(game: Game, d: SaveV3): void {
   game.resetCombat();
   game.magic = { ...newMagic(), runes: [...d.magic.runes], shelf: [...d.magic.shelf], effects: d.magic.effects.map(e => ({ ...e })) };
   game.poison = d.poison;
+  game.useOn = null;
+  releaseMusic(game);
   game.loadLevel(d.level);
   game.ui.levelChanged(d.level);
   const P = game.pose;

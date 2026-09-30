@@ -17,7 +17,7 @@ import { randInt, type Rng } from '../core/rng';
 //  - fades take 2/rate seconds; fired during an animation they run alongside it, elsewhere they block;
 //  - a script with no fade-in starts at full brightness (the others start black and fade in);
 //  - CRNG colour cycling runs whenever a range has a rate (the flags field is ignored), stepping at 18.2 Hz;
-//  - rep-seg (7), music (25) and the unknown commands 1, 2, 11, 12, 15, 18, 24, 26 do nothing.
+//  - rep-seg (7) and the unknown commands 1, 2, 11, 12, 15, 18, 24, 26 do nothing; music (25) goes to the host.
 
 export interface CutsHost {
   /** A game file: 'CUTS/CS000.N01', 'SOUND/BSP05.VOC', 'BYT.ARK', 'PALS.DAT'. */
@@ -27,6 +27,8 @@ export interface CutsHost {
   rng: Rng;
   /** Start a voice clip (null stops it). The player keeps the time; the host only makes the sound. */
   voice?(v: Voc | null): void;
+  /** Command 25: play music theme n (UWAnn.XMI). */
+  music?(n: number): void;
 }
 
 export interface Subtitle { text: string; colour: number }
@@ -58,7 +60,7 @@ export class CutscenePlayer {
   t = 0;
   /** What the data asked for that we could not do: missing or damaged files and records. */
   readonly problems: string[] = [];
-  /** Commands we recognise but do not act on yet (music, rep-seg). */
+  /** Commands we recognise but do not act on yet (rep-seg; music without a host that plays it). */
   readonly unsupported: string[] = [];
 
   private readonly cmds: CutsCmd[];
@@ -222,7 +224,7 @@ export class CutscenePlayer {
         break;
       }
       case 23: this.startScroll(a[0]!, a[1]!); break;
-      case 25: this.unsupport('music (25)'); break;
+      case 25: if (this.host.music) this.host.music(a[0]!); else this.unsupport('music (25)'); break;
       case 27: {
         const limit = a[0]! > 0 ? a[0]! / 2 : 60;
         if (this.voiceEnd > this.now) yield Math.min(limit, this.voiceEnd - this.now);
