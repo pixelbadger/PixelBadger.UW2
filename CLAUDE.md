@@ -65,9 +65,9 @@ Real-data tests live in `tests/data` and run with `npm run test:data` (own confi
 
 ## CI/CD
 PRs into `main` must pass `.github/workflows/ci.yml` (typecheck, test, build). Merges to `main` run
-`deploy.yml`: CI again, then `data-tests` (the real-data suite; the disc is downloaded from the repository secret
-`UW2_DATA_URL`, optionally pinned by the variable `UW2_DATA_SHA256`, and cached; no secret = the gate fails), then
-GitHub Pages. Vite `base: './'` so the site works under `/<repo>/`.
+`deploy.yml`: CI again, then GitHub Pages. The `data-tests` gate (the real-data suite; the disc is downloaded from the
+repository secret `UW2_DATA_URL`, optionally pinned by the variable `UW2_DATA_SHA256`, and cached) is **disabled**
+(`if: false`, not in deploy's `needs`) until a disc source is set up. Vite `base: './'` so the site works under `/<repo>/`.
 
 ## TODO (priority order)
 Tests still to write:
