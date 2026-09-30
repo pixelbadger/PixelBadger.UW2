@@ -3,7 +3,9 @@
 Built after UnderworldGodot (hankmorgan's MIT-licensed port, which traced UW2.EXE): `combat.cs`, `combat_input.cs`,
 `combat_missile.cs`, `damage.cs`, `npcai.cs`, `npcdeath.cs`, `runicmagic.cs`, `spellcasting*.cs`, `playerdat*.cs`,
 `critterobjectdat.cs`. Where it says "original" below, it follows that trace; "ours" is an approximation, and the
-code says so too. None of this has been checked against the real disc by play yet.
+code says so too. The data side has been checked against the real disc (tables, spell names and rune triplets,
+message numbers; Britannia's 21 creatures are peaceable, the sewers' rats and slugs hostile-minded); the rules have not
+been checked by play yet.
 
 ## Implementation
 

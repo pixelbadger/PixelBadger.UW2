@@ -105,7 +105,9 @@ Carried over verbatim from the single-file engine's header (legacy/uw2-web-engin
    168 you see nothing, 170 can't talk, 269/274 no space, 40-47 compass directions);
    block 2 = chargen incl. skill names 51-70.
 
- OBJECT PROPERTIES (after UnderworldGodot's trace of UW2.EXE; NOT yet checked against the disc)
+ OBJECT PROPERTIES (after UnderworldGodot's trace of UW2.EXE; checked against the disc's data: the tables decode
+ to values that fit the names (dagger fast/light, battle axe slow/heavy, sling/bow/crossbow -> stones/arrows/bolts),
+ the 69 spell names match their rune triplets, and the block-1 message numbers used say what they should)
  - OBJECTS.DAT: u16 header; 0x002 melee weapons 0x00-0x0f x 8 bytes (slash, bash, stab, min charge,
    charge speed, max charge, skill 3 sword/4 axe/5 mace/6+ none, durability); 0x082 missiles and
    launchers 0x10-0x1f x 3 (damage, ammo type, ranged type: a launcher's ammunition is 0x10 + type;
