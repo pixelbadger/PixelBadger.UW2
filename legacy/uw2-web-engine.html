@@ -1,0 +1,1948 @@
+<!doctype html>
+<!--
+=====================================================================================
+ CLAUDE.md — Ultima Underworld II web engine (single-file WebGL2 port, no emulation)
+=====================================================================================
+ WHAT THIS IS
+ A from-scratch browser engine that reads the original UW2 data and plays the Labyrinth
+ of Worlds. Not DOSBox. Everything lives in this one HTML file:
+   <style>            loader, HUD, stone cards (options, menu, character creation)
+   <script module>    part 1: format parsers (u16/u32, uw2Decompress, readArk, readGR,
+                      readStrings, rleDecode, readCritPage, readModels, readPanels,
+                      readFont, readPlayer) - pure functions, Node-importable
+                      part 2: engine (ISO reader, storage, level model, geometry, models,
+                      WebGL2 renderer, creatures, collision, picking, controls,
+                      interface, inventory, player/character creation, saves, boot)
+ Published artifact: https://claude.ai/artifact/8wWTiVhtnrzhmyT7Ske5Hk
+ Owner: Ben. Prefers direct engagement; ask when a requirement is ambiguous.
+
+ IMPLEMENTED (as of this revision)
+ - All 80 level slots render with original textures, LIGHT.DAT shading, doors (incl.
+   secret, open/close), stairs/ladders/teleports (move trigger -> 0x181), automap.
+ - Creatures: animated CRIT sprites that amble near their post (stand-in AI).
+ - Real furniture/props from UW2.EXE models (flat palette colours + TMOBJ textures),
+   wall decals (switches, levers, writing), paintings, bridges with correct textures.
+ - Collision: walls, floor steps, doors, creatures, and props (model height grids);
+   jumping (J / touch button) onto tables; creatures stand on what's under them.
+ - Reading books, scrolls, signs, wall writing, gravestones.
+ - Interface in the original's style (see INTERFACE), command modes, inventory
+   (get / hold / place / drop), stats page, health/mana flasks, compass.
+ - Start menu -> character creation (original steps and wording) or load a save, or
+   explore as the disc's default character. 4 save slots; world changes persist
+   across level changes and in saves.
+ - Conversations: all 102 CNV.ARK programs run on ConvVM (see CONVERSATIONS). Talk mode
+   or T; portraits, numbered replies (1-9), typed answers, speaker switches; the world
+   pauses. Per-NPC memory, quest flags, clocks and a game clock are saved.
+ - Trading: setup_to_barter shows six slots a side (their goods / your offer / your pack);
+   offer, demand, judgement and decline follow UW2's rules as ported by UnderworldGodot.
+   NPCs carry their level-data inventory (mobile link chain) plus UW2's spawned loot.
+ - NPCs who turn on you (goal 5, target the Avatar) chase you; they cannot hurt you yet.
+
+ DATA LOADING (bring your own disc)
+ - User picks the GOG "Ultima Underworld I & II" ISO (or loose files). The ISO9660
+   reader pulls UW2/DATA/{NEEDED + OPTIONAL}, UW2/CRIT/* (keys "CRIT/<n>") and
+   UW2/UW2.EXE (models). CNV.ARK, BABGLOBS.DAT, CHARHEAD.GR, GENHEAD.GR are OPTIONAL
+   (conversations, portraits); caches from before them need Forget data. Game assets are never embedded in the page (copyright;
+   also the 16 MB page cap).
+ - Everything optional degrades: no UW2.EXE -> hand-built stand-in furniture; no UI
+   art -> text buttons and a plain panel; no CRIT -> no creatures.
+ - STORAGE IS A CONVENIENCE, NEVER A GATE. IndexedDB "uw2-engine"/kv holds "data"
+   (the extracted files) and "save0".."save3". Every call goes through withTimeout;
+   the game starts before the cache write, and nothing awaits storage on the boot
+   path except the initial cacheGet (5 s cap). Reason: after the UI release, loading
+   "did nothing" in the claude.ai viewer although file:// and http:// runs in Chromium
+   and WebKit worked; awaiting cachePut before start was the prime suspect. Boot shows
+   staged status text and window error/unhandledrejection go to #err (or say() once
+   in-game), so a future failure is visible instead of silent.
+ - Old caches (from before a file was added to OPTIONAL) keep working but lack art;
+   the game tells the player to use Options > Forget data and choose the disc again.
+
+ REVERSE-ENGINEERED FORMAT NOTES (verified against the real data)
+ - LEV.ARK (UW2 ark): u16 nblocks, u32 pad, then offsets[n], flags[n], datasize[n],
+   availsize[n] (u32 each). flags&2 = compressed. Blocks 0-79 level maps (0x7e08
+   bytes), 80-159 texture maps (64 x u16 T64 indices + 6 door bytes).
+ - UW2 compression: u32 outsize, then flag byte (LSB first): 1 = literal, 0 = 2-byte
+   backref: ofs = m1 | (m2&0xF0)<<4 (sign-extend 12 bit) + 18, adjusted into the
+   current 4K window; len = (m2&0xF)+3.
+ - Tile word0: type 0-3 bits (0 solid,1 open,2 open SE,3 open SW,4 open NE,5 open NW,
+   6-9 slope rising N,S,E,W), height bits 4-7 (x0.25 tile), floor tex bits 10-13
+   (index into texmap 0-15). word1: wall tex bits 0-5 (texmap index), first object
+   bits 6-15. Ceiling texture = texmap[32]. Ceiling height = 16 units (4 tiles).
+   Walls take the OPEN tile's wall texture. Tile y=0 is south; world z = -tileY.
+ - Objects: index<256 mobile (27 bytes at 0x4000), else static (8 bytes at 0x5b00).
+   w0: id bits0-8, invisible bit14, is_quantity bit15. w1: z bits0-6 (/32 = tiles),
+   heading bits7-9 (0 = north, clockwise 45deg), fy bits10-12, fx bits13-15.
+   w2: quality bits0-5, next bits6-15. w3: owner bits0-5, link/quantity bits6-15.
+ - Move trigger 0x1a0 -> link -> teleport trap 0x181: dest x=quality, y=owner,
+   level = z-1 (absolute; z=0 same level). UW2 stairs/ladders put the trigger INSIDE
+   the solid wall tile you walk into; the visible stairs/passage/ladder is a
+   0x16e "special tmap obj" on the facing wall: texture = texmap[owner],
+   1x1 tile quad, bottom at z/32, heading points into the wall.
+ - Doors 0x140-0x14f: +8 = open, &7==7 secret, &7==6 portcullis. Door sits on the
+   tile edge given by fx/fy; image = DOORS.GR[doorbytes[id&7]], 32x64 = 0.5 x 1 tile.
+ - .GR: u8 type, u16 count, u32 offsets. Image: type,w,h then 4 = raw 8-bit (u16 len),
+   8 = 4-bit RLE, 0xA = 4-bit raw (u8 auxpal, u16 nibble count). Aux pals: ALLPALS.DAT.
+ - RLE (GR and critters): alternating repeat/run records; count words: n, or 0 then
+   2 words, or 0,0 then 3 words, ALWAYS combined with <<4 even for 5-bit critter
+   words (getting this wrong garbles ~20% of creature frames).
+ - STRINGS.PAK: huffman (nodes: char,parent,left,right; root = last; leaf left=255),
+   bits MSB-first, strings end with '|'. Blocks used: 3 book/scroll text
+   (quantity-0x200), 4 object names, 8 wall writing/signs (0x166/0x165,
+   quantity-0x200), 10 wall/floor texture descriptions (by T64 index).
+ - CRIT: AS.AN = 64 x (critter file number, auxpal) for NPC ids 0x40-0x7f (255=none).
+   CRxx.yy (xx octal critter, yy page): 4 aux pals x 32 bytes, then 256 u16 frame
+   offsets in GLOBAL frame-index space (merge pages). Frame: w,h,hotx,hoty,type
+   (6 = 5-bit RLE, 8 = 4-bit), u16 word count. CR.AN: 512 bytes per critter,
+   64 anims x 8 bytes (7 frame indices, count). Anims 0-7 idle, 8-15 walk, by view
+   direction; 4 = facing viewer. dir = (4 - round((camAngle-npcAngle)/45deg)) & 7.
+ - LIGHT.DAT: 16 rows x 256 palette remaps (row 0 = full bright). The fragment shader
+   samples index textures, picks a row by distance, then PALS.DAT palette 0.
+ - Level 0 start: tile holding object 0x136 (Miranda's summons in the Avatar's room).
+ - Object word0 bits 9-12 = "flags" (o.fl): picks textures (see below).
+ - 3D MODELS (UW2.EXE, grabbed from UW2/ on the ISO): offset table found by signature
+   D4 64 AA 59 (0x54cf0), 32 u16 offsets relative to table+0x9a, +10 bytes header.
+   Node opcodes per Underworld Adventures' ModelDecoder (readModels). 8.8 fixed,
+   units = tiles on all axes (pillar extent 4 = ceiling), x east, y north, z up;
+   node 0x8c vertices reach the ceiling. Colour offsets -> palette via MODEL_COLS (UA).
+   Heading h rotates CLOCKWISE by h*45deg, heading 0 = model +x faces east (verified:
+   31 chair/table pairs, chairs face their tables). Id->model map in MODEL_OF (UA cfg).
+ - TMOBJ.GR (54): 0-3 pillars (by flags), 4-11 lever (0x161, 4+fl), 12-19 switch (0x162),
+   20-27 writing (0x166, 20+(fl&7)), 28-29 gravestones, 30-41 furniture/bridge woods,
+   42-47 paintings (42+fl). Bridge 0x164: fl<2 -> TMOBJ 30+fl else texmap[fl-2+48] (UA).
+   GUESSED, unverified: table top 30+(fl&3), chair 38+(fl&3), shelf 36.
+ - PANELS.GR: headerless 79x112 raw bitmaps: 0 inventory, 1 rune bag, 2 stats (labels baked
+   in). Slot centres (panel px): shoulders (16.5,12.5)/(64.5,12.5), hands (12.5,35)/(68,35),
+   rings (26,51)/(56,51), bag x 12.5/31/50/68 at y 80.5 and 99.5, r~8. Stats rows at y
+   17+7i, skills box y 59-101, arrows y>101. BODIES.GR 36x69 drawn at (22,3).
+ - .SYS fonts: u16 ?, charsize, space, height, rowbytes, maxwidth; per glyph rows MSB-first
+   + width byte; glyph index = ASCII (readFont).
+ - SKILLS.DAT: 32 bytes = 8 classes x (STR, DEX, INT, ?) bases (4th unknown), then 8 classes x 5
+   groups (u8 n, n skill ids 0-19). n=1 = granted, n>1 = the player picks one.
+   CHRGEN.DAT (238 bytes) looks like chargen screen/button scripting; not decoded, not used.
+   HEADS.GR = 10 player portraits 64x70 (0-4 male, 5-9 female), matching BODIES.GR order.
+ - PLAYER.DAT on the disc is an unencrypted dev template "GRONKEY" (STR 27 DEX 16 INT 17,
+   skills from 0x21: Attack 6, Defense 4, Barehanded 3) plus a test inventory at 0xc5 (not
+   used). Vit/mana read at 0x34-0x37, two bytes before UA's UW1 offsets: UNVERIFIED.
+ - FLASKS.GR 75 = empty flask, 76 = same with the liquid area as index 0 (mask); both sit on
+   a black box that initUI flood-fills away. 0-74 are level strips (colours taken from them).
+ - LFTI.GR = command icons, pairs normal/active: options, talk, get, look, fight, use.
+   COMPASS.GR 0-3 compass by quarter (0 assumed north), 4-19 needle tips (unused).
+   CHRBTNS.GR 0 = stone bar button, 3 = stone square. CHAINS.GR 0 = pull chain.
+ - NPC mobile record (27 bytes): whoami at 0x1A (UW1: 0x19). Rest follows UW1 and fits
+   level 0: hp 0x08; u16 0x0B goal bits0-3, gtarg bits4-11; u16 0x0D level bits0-3,
+   talkedto bit13, attitude bits14-15 (3 friendly .. 0 hostile); u16 0x16 xhome
+   bits10-15, yhome bits4-9 (= the NPC's tile on level 0); hunger 0x18&0x7f. readNpc.
+ - Portraits: CHARHEAD.GR[whoami-1] 64x70 (168, e.g. 141 = Lord British), GENHEAD.GR
+   [id-0x40] 34x34 generic. CONVERSE.GR (6: name plates, frames, barter panel) unused.
+ - STRINGS block 7: 0 "You cannot talk to that!", 1 "You get no response.", 8-16 barter
+   verdicts, NPC names at whoami+16 (NOT whoami), 256+ creature descriptions.
+ - STRINGS block 1 = game messages (13 welcome, 107 can't reach, 109 can't pick up,
+   168 you see nothing, 170 can't talk, 269/274 no space, 40-47 compass directions);
+   block 2 = chargen incl. skill names 51-70.
+
+ CONVERSATIONS (verified by disassembling and running all 102 programs; uw2-conversations.md
+ is the fuller spec, but it is WRONG on the points marked * below)
+ - CNV.ARK = LEV.ARK layout, all blocks compressed; 102 populated slots (1..168, none >=256).
+   Block: u16 0x0828, 0, code words, 0, 0, string block (0x0E00+slot), G (globals = the
+   BABGLOBS.DAT (u16 slot,u16 size) entry), 94 imports; imports {u16 len, name, u16 id,
+   u16 1, u16 kind 0x111 fn / 0x10F var, u16 ret}; then code (u16 words). readConv.
+ - Memory: 0-30 imported vars (play_*, npc_*, dungeon_level, game_days/mins...), 31..G-1
+   private (persist per slot: CONVST.g[slot]), stack from G. *31 and 32 are the system
+   slots in EVERY program (31 = 1 on exit, 32 cleared at start), not G-2/G-1.
+ - Ops 0x00-0x29 per the md. *Relative branches: target = branch address + 1 + offset
+   (6345/6345 land on instructions; +2 misses 5548). OPSUB/DIV/MOD are b op a (a on top;
+   confirmed by the game-time difference code). STO value on top. OFFSET base on top, 1-based.
+ - CALLI: argc at mem[sp], argument POINTERS at sp-1 (arg 1), sp-2...; caller pops. Only
+   babl_menu (1 arg) and babl_fmenu (2) push a false 0 count. *babl_fmenu returns the
+   chosen STRING ID (callers compare with ids); babl_menu returns the 1-based position.
+   Arg meanings (sp-1 first): set_quest(value, index); sex(female str, male str);
+   contains(typed text, keyword); x_clock(value | >0x100 = read, clock); x_skills(value |
+   10000 raise | >10000 train, skill); x_traps(value | <0 read, var: 0-0xff variables,
+   0x100+ quest flags, 0x190+ clocks); teleport_player(level 1-based, y, x);
+   teleport_talker(y, x); gronk_door(0 open / 1 close / 2 toggle, y, x) - the y values
+   in slots 1, 9, 45 match door tiles on those NPCs' levels; take_from_npc(item id |
+   1000+class); show_inv(handles[], ids[]); give_to_npc(handles[], n);
+   find_barter_total(total out, handles out, count out, id); identify_inv(flag, name
+   string out, ?, handle) returns the value; x_obj_stuff(quality, flag0, flag1, link,
+   flags, owner, heading, mode 0 read / else write, handle), -1 = leave alone;
+   x_obj_pos(z, y, x, mode, handle). "Handles" are level object indices, or 1024+ for
+   objects made in the talk (hOf/oOf).
+ - String ids: < block length = the talk's own block; 512+ = block id>>9, index id&511
+   (gstr); 0x7000+ = runtime strings (typed text, names).
+ - Text: @ + G/S/P + S/I + n, optionally an index in the same form without @ ("@GS70SI1" =
+   element local1 of the array at global 70: Britannia's news list) and C<n> (element n,
+   1-based, per the reference port). \m = page break (paragraph), \n newline, \1...\0 wraps words
+   the PLAYER says (e.g. echoing a typed password): shown as a reply line.
+ - babl_hack: every program carries dead library wrappers for sub-commands 0/1/4 (never
+   called). Live: 3 read-and-clear Jospur's debt (quest 133); 5 marks an NPC by whoami;
+   7 recharge (charges in link: approximation); 8 scales trade patience; 9 trade bonus;
+   10 "wearing the Guardian's signet ring" (any worn slot: no ring slots yet); 0/1/2/4
+   pit-fight state: always "no fight" (arena fights need combat).
+ - pause yields state 'more' (a More button / Enter); do_input_wait returns at once.
+ - Slot 8 (Felix) loops forever on one line in the shipped data (0xd55: SAY; JMP 0xd55);
+   the VM ends a talk when the same SAY runs twice with no reply between.
+ - Engine side (startTalk / talkStep / closeTalk, convFn): imports filled from PL + o.npc,
+   npc_name from block 7. After the talk: attitude, goal, gtarg, talkedto, hp written back
+   to o.npc; private globals saved; queued world effects applied (remove/move talker,
+   transform, teleport player). Every builtin a UW2 program calls is implemented after
+   UnderworldGodot (hankmorgan's port, which traced UW2.EXE: g.cs, conversationtrade.cs,
+   npcloot.cs, babl_hack.cs); only add_event / gronk_trigger (never called) remain
+   unbuilt and log once. set_sequence plays CR.AN animation group g, frame f on the NPC
+   with that whoami (unverified). Loot: OBJECTS.DAT critter bytes 0x20-0x27 (npcloot).
+ - Trading (conversationtrade.cs): threshold / patience / appraisal accuracy per NPC from
+   OBJECTS.DAT critter bytes 0xd-0xe; item value = COMOBJ value x quality/64 x quantity
+   (the reference counts one of a stack; we count all), likes x1.5, dislikes 0; the
+   NPC keeps its own first weapon. do_demand compares your health, level and charm
+   against their goods' value and toughness; refusal sets goal 5 / target 1 (attack).
+ - GTIME: one game minute per real second (our choice), paused while talking.
+
+ CUTSCENES (researched, NOT implemented; verified against the disc unless marked)
+ References: UnderworldGodot src/cuts/{cutsplayer,CutsceneCommand,cutsutil}.cs and
+ src/loaders/cutsloader.cs (hankmorgan, traced UW2.EXE ovr108); UA uw-formats.txt 3.7.
+ - Files: UW2/CUTS/CSnnn.Nxx. Cutscene number N -> "CS"+octal(N,3); extension number e ->
+   "N"+octal(e,2) (ext 8 = N10, 10 = N12). N00 = control script, N01.. = LPF animations.
+   LBACK000-007.BYT = raw 320x200 index maps for panoramas (palette from the current LPF).
+ - LPF (DeluxePaint Animator): header 128 B (u16 pages @6, u32 records @8, w @0x14, h @0x16,
+   u32 nFrames @0x40, u16 fps @0x44, byte @0x1A != 0 -> last frame is a loop delta, don't show);
+   then 16 CRNG colour-cycle ranges x 8 B (BE u16 pad, rate, flags; u8 low, high); palette
+   256 x BGRx (8-bit); 256 page descriptors x 6 B; pages from 0x0B00, 64K each: u16 base
+   record, u16 nRecords, u16 nBytes, u16 0, u16 sizes[n], then records. Record: 2 bytes + u16
+   extra (skip extra, rounded even, if byte1 != 0), then RLE: s8 n>0 dump n; 0 -> run(cnt,px);
+   n<0: n&0x7f skip, or long: s16 0 = end, >0 skip, else &0x7fff >=0x4000 run else dump.
+   Frames are deltas on the previous buffer; records <= 4 bytes = unchanged frame.
+   CS012.N01 (credits): only every 4th frame is real. CRNG: rotate range forward when
+   counter += rate reaches 65 (at 18.2 Hz).
+ - N00: records {u16 frame, u16 cmd, args}. Arg counts: 0:2 1:0 2:2 3:1 4:2 5:0 6:0 7:1 8:2
+   9:1 10:1 11:1 12:1 13:3 14:2 15:0 18:4 19:3 20:3 21:2 22:3 23:3 24:1 25:1 26:1 27:1.
+   0 text(colour,str) 3 pause(arg/2 s; >=999 forever) 5 frame-set: the record's FRAME field
+   = segment length 6 end 7 repeat seg 8 open file (cs,ext; cs 996 = random 28+rand4 i.e.
+   CS034-037 backdrop) 9/10 fade out/in (rate, higher = faster, 0 instant) 13 text+voice
+   (colour, str | 0xFFFF clear, voc: 999 none, 998 keep playing, else SOUND/BSPnn.VOC)
+   19 palette lerp to PALS.DAT[a] (speed, frames) 20 viewport (w,h,subtitle band height)
+   21 scroll start (x,y) 22 map LBACK (pos, extent, file) 23 scroll (dir 0 down 1 right 2 up
+   3 left, delta) 24 audio setup (meaning unclear; ignore) 25 music theme 27 wait for voice
+   (timeout arg/2 s). Frame 999 records run after the segment. Playback as UG does it: split
+   into segments at 5/6; each new segment auto-advances to the next ext unless 8 changed it;
+   fire commands whose frame == current frame; fps from the LPF header.
+   Panoramas (CS000 cart/bridge, CS002): composite LBACKs, show a 320x(200-band) window
+   moving (frame+1)*delta; the segment's LPF is a sprite overlay decoded on top of the LBACK
+   base, applying only written pixels. UG swaps LBACK000 for the next LPF's frame 0 when the
+   cart sprite starts (empirical, DOSBox-matched).
+ - Text: STRINGS block 0xC00+N, FONTBIG.SYS, bottom band, "_" renders as space-dot.
+   Colours 241-243 are palette indices.
+ - VOC: u16 @0x14 -> block type 1: u24 size, u8 rate (Hz = 1e6/(256-r)), u8 codec 0,
+   8-bit unsigned mono PCM. BSPnn = cutscene speech, UW00/01 = Guardian laughter, SPnn sfx.
+ - Catalogue: 0 intro letter + cart + bridge + Guardian's attack (N01-N07, N10, N12, N13,
+   N14, N15; N11 unused), block C00 "Dear Avatar..."; 1 Blackrock shell (music 25);
+   2 ending (C02, needs the victory path); 4-7 Guardian taunts over a random CS034-037
+   backdrop, voice BSP05/06/07/12, text C04-C07; 9 = CS011 title (after BYT 6 pal 5 Origin,
+   BYT 7 pal 6 LGS, ~2 s each); 10 = CS012 credits; 24-27 = CS030-033 dreams with voice
+   BSP00/02/03/04 (CS030 = C18 "I hear the beaches near Cove are nice."); 28-30 = CS034-036
+   random dreams (C1C-C1E, no voice); 32 = CS040 Guardian interrupting Lord British (C20
+   "Yes, British, hasten to thy vain struggle", no voice file); 0x103 = CS403 death skulls
+   (small window, alpha).
+ - Triggers (UG): startup = splash + 9, then intro 0 then 1 (Esc skips straight to menu);
+   end of a conversation: if quest 143 != 0 play cutscene q-1 (q-1 == 2 -> victory screen),
+   then clear it (UNVERIFIED here: a static scan found no set_quest with 143 nearby; check
+   by running Lord British's talk and logging set_quest); sleep (bed 0x167, bedroll): UW2
+   dream if x_clock 1 >= [4,6,10,14][k] and quest 145 bit k set, else random k 4-6 if its bit
+   is clear; play 24+k and XOR bit k; wake message block 1 0x13-factor.
+
+ RENDERING
+ - One R8 TEXTURE_2D_ARRAY of 64x64 layers: T64 textures, OBJECTS.GR, DOORS.GR,
+   TMFLAT.GR, TMOBJ.GR, then one flat-colour layer (G.palLayer: texel (c%64,c>>6)=c).
+   Bases: G.objBase, G.doorBase, G.tmBase, G.tmoBase. Creatures use a per-level R8
+   atlas (texture unit 3). Palette on unit 1, light table on unit 2. Nearest filtering.
+ - Buffers: 'world' (static per level), 'doors' (doors + stand-in props + decals),
+   'models' (stride 7: pos, uv, layer, shade; progM adds the per-face shade to the
+   light distance), 'sprites' (billboards), creatures (dynamic every frame). 'doors'
+   and 'models' are rebuilt by buildDoors() whenever a door/lever/object changes.
+ - Scale: 1 tile = 1.0, 64 texels per tile, height unit 0.25, ceiling 4.0, sprites
+   1px = 1/64, creatures 1px = 1/80 (CPX). Eye height 0.62, radius 0.2, step 0.3.
+ - 320x200 "chunky" mode renders at 200px height and upscales pixelated.
+
+ COLLISION
+ - LV.solids: stand-in boxes/cylinders ({x,y,hx,hz,c,s,b,t} / {r}) or real models
+   ({m:true, g:modelGrid(n)}): a 1/16-tile height grid in model space, lo/hi per cell,
+   filled by sampling every triangle. cellsOf() walks the cells under a disc.
+ - solidBlocks(X,Y,r,feet,h): anything overlapping [feet+STEP, feet+h] blocks.
+   supportAt(X,Y,feet): floor raised to any top within STEP under a 0.06 probe, so
+   seats/beds are stepped onto, table tops need a jump (JUMPV 3.2, apex ~0.57).
+ - teleport/goLevel/loadGame call unstick(). If already embedded, any floor move is
+   allowed. Creatures carry c.h and keep |dh|<=STEP. Non-solid models: beam,
+   painting, moongate.
+
+ INTERFACE — WHAT WE'VE LEARNED ABOUT OUR APPROACH
+ - Direction from Ben: match the original UI's style, modernised. In practice:
+   * Use the disc's own art, decoded at runtime (canvases/data URLs, CSS variables
+     --stone-bg, --btn-bg, --sq-bg, --scroll-l/r). Never embed or redraw it.
+   * Keep the original's PIECES and METAPHORS (command icons that set a mode, flasks,
+     compass, scroll message strip, paperdoll panel with pull chain, 4 save slots,
+     chargen steps and wording from STRINGS block 2) but lay them over a full-bleed,
+     responsive view instead of the fixed 320x200 frame.
+   * Pixel art is drawn at native size into a canvas and scaled by an integer-ish
+     factor with image-rendering:pixelated (UI.u: 3 desktop, 2 touch/narrow; panel
+     UI.ps fits the viewport). Text that sits ON baked pixel art (stats page) uses the
+     game's FONT5X6P so it matches; longer prose (messages, cards, books) uses
+     Alegreya / Alegreya SC for legibility.
+   * Our own chrome (Options, menu, character creation) is a "stone card": panel stone
+     tile as background, CHRBTNS stone bars as buttons, parchment/torch text colours.
+   * Prefer the game's own message strings (blocks 1 and 7) over our wording; say
+     plainly when something isn't built ("Trading is not built yet").
+   * Conversation panel: stone card, NPC portrait + name left, the Avatar's head right,
+     parchment log (speaker labels once a second speaker has talked; narration italic,
+     replies in brown), numbered reply buttons below; 1-9 pick, Esc leaves (commits).
+   * Where the original is fiddly on touch, modernise the flow but keep the idea:
+     Get puts things straight into the first free bag slot (cursor only when full).
+ - Layout: commands = left column (desktop) / top row (touch or <760px); flasks bottom
+   corners; compass + message strip bottom centre; bag (and jump on touch) stone
+   buttons beside/above the mana flask; panel right (desktop) / centred (touch).
+ - Pointer lock: any UI that needs a cursor calls document.exitPointerLock(); a click
+   on the view re-locks, except when holding an item (then it drops where clicked).
+ - Keys: WASD, Shift, J jump, E/Space act (current mode), G get, I inventory, M map,
+   L light, T talk, Esc closes.
+
+ GAME STATE
+ - PL (player): {name, sex, hand, cls, body, diff, str, dex, int, vit:[cur,max],
+   mana:[cur,max], skills[20], exp}. Flasks and stats page read only PL.
+ - Character creation rolls are OUR approximation: attribute = SKILLS.DAT class base +
+   rand 0..10; each granted/picked skill + rand 4..13; vitality 33..36; max mana by
+   class from UA's UW1 script (2,35,15,2,27,3,2,2). The real UW2 rules are unknown.
+ - INV: shl, shr, hl, hr, b0-b7, held. Items are the level's own object records.
+ - LEVELSTATE[n] = {objs, doors, props} snapshotted on leaving a level; loadLevel uses
+   it instead of the pristine lists. Saves = {PL, INV, lvl, P, visited, levels}.
+   Creature positions are not saved. Saves also hold conv (CONVST: g per-slot globals,
+   q quest flags, c clocks, t x_traps) and time (GTIME); older saves load with defaults.
+
+ TESTING (how this was built)
+ Headless Chromium via Playwright (--use-angle=swiftshader; WebKit also installed for
+ Safari checks). Serve over http (python http.server) to exercise IndexedDB like a real
+ origin; set_input_files on #pick with the ISO, wait for window.__uw, drive it (P, LV,
+ G, UI, INV, PL, goLevel, teleport, act, tryGet, saveGame, loadGame, openCreation,
+ supportAt, solidBlocks, blocked), press keys, take screenshots. Node can import
+ part 1 on its own; in a sandbox, pip pycdlib pulls UW2/* out of the ISO. Underworld
+ Adventures (github vividos/UnderworldAdventures) is the reference for formats.
+ Not testable here: the claude.ai viewer itself; ask Ben to report the status line.
+ Conversations: Node imports part 1 and runs every slot headless (first / last / random
+ choices, typed "xyzzy") asserting EXIT with no VM error, bad string id or leftover @.
+ In the page, __uw.startTalk({o,c}) with a stand-in o.npc.who runs any slot anywhere.
+
+ TODO (roughly in priority order)
+ [ ] Confirm loading works in the claude.ai viewer after the storage change.
+ [ ] Conversations, still open: arena fights (babl_hack 0/1/2/4) and hostile NPCs hitting
+     you both wait on combat; ring slots for babl_hack 10; confirm set_sequence and
+     teleport_player's x/y by play (one data point each).
+ [ ] Real chargen rules (decode CHRGEN.DAT; 4th SKILLS.DAT byte); portraits in HUD.
+ [ ] Inventory depth: OBJECTS.DAT/COMOBJ.DAT classes for weight + equip rules, armour
+     on the paperdoll (ARMOR_M/F.GR), containers (0x80-0x8f via link), bag paging,
+     rune bag (PANELS 1), using items (keys on locks 0x10f, food, light sources).
+ [ ] Lever/button/switch effects: follow link to traps (0x180-0x19f); other triggers
+     (use 0x1a2, pressure, text, damage, level-change traps other than 0x181).
+ [ ] Real NPC AI, combat, death animations (anims 56-63), XP; save creature state.
+     Chasers (goal 5 / gtarg 1) already close in: combat should make them strike.
+ [ ] Spells and runes; light sources as items instead of the Light option.
+ [ ] Water/lava: palette cycling, swimming, damage; TERRAIN.DAT.
+ [ ] Models: confirm table/chair/shelf texture picks, the moongate's look, which
+     COMPASS image is north; gouraud nodes (0xd4) ignored.
+ [ ] Doors: portcullis texture check, frame vs taller ceilings, animated swing.
+ [ ] Automap fidelity (UW2 map notes, only visited tiles). Import original SAVEn dirs.
+ [~] CUTSCENES + AUDIO: PARTIAL. Research done (see CUTSCENES below); no player code yet.
+     Next: pull UW2/CUTS/* and UW2/SOUND/*.VOC in isoExtract (cache bump -> Forget data),
+     LPF decoder, N00 interpreter, VOC -> WebAudio, then hook the triggers listed below.
+ [ ] Music (XMI via cmd 25; needs XMI->MIDI + a synth, e.g. OPL2 with UW.AD), SOUNDS.DAT sfx,
+     BYT.ARK screens (chargen backdrop BYT 1, main screen BYT 4, splash BYT 6/7).
+=====================================================================================
+-->
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ultima Underworld II · web engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Alegreya+SC:wght@500;700&family=Alegreya:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+:root{ --stone:#26231e; --deep:#0f0e0c; --mortar:#4a443a; --parch:#e9dfc8; --torch:#e7a93b; --ash:#9b917f;
+  box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px); }
+*,*::before,*::after{box-sizing:inherit}
+html,body{height:100%;margin:0;background:var(--deep);color:var(--parch);font-family:Alegreya,Georgia,serif;overflow:hidden;overscroll-behavior:none}
+button,select{font:inherit}
+:focus-visible{outline:2px solid var(--torch);outline-offset:2px}
+#loader{height:100%;display:grid;place-items:center;padding:24px;
+  background:radial-gradient(ellipse at 50% 38%,#3a3024 0%,#1a1713 55%,var(--deep) 100%)}
+#loader.over{background:radial-gradient(ellipse at 50% 38%,#5a4526 0%,#1a1713 60%,var(--deep) 100%)}
+.card{max-width:34rem;width:100%}
+h1{font-family:"Alegreya SC",Georgia,serif;font-weight:700;font-size:clamp(2.1rem,7vw,3.4rem);line-height:.95;margin:0 0 .15em;letter-spacing:.01em;color:var(--parch);
+  text-shadow:0 0 18px rgba(231,169,59,.25)}
+.sub{font-family:"Alegreya SC",Georgia,serif;font-weight:500;color:var(--torch);font-size:1.15rem;margin:0 0 1.4rem}
+p{line-height:1.55;margin:0 0 1rem;color:#d8ccb2;max-width:62ch}
+.pickbtn{display:inline-block;margin:.4rem 0 1rem;padding:.8rem 1.3rem;border:1px solid var(--torch);color:var(--deep);background:var(--torch);
+  font-family:"Alegreya SC",serif;font-weight:700;font-size:1.1rem;border-radius:3px;cursor:pointer}
+.pickbtn:hover{filter:brightness(1.08)}
+.fine{font-size:.92rem;color:var(--ash)}
+#err{color:#f08a6c;min-height:1.4em}
+#status{color:var(--torch);min-height:1.4em}
+#game{position:fixed;inset:0}
+#view{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block;cursor:crosshair}
+#view.chunky{image-rendering:pixelated;image-rendering:crisp-edges}
+#map{position:absolute;inset:0;width:100%;height:100%;cursor:pointer}
+/* HUD: the original's pieces (command icons, flasks, compass, scroll, inventory panel), drawn from the disc at runtime */
+.px{image-rendering:pixelated;image-rendering:crisp-edges}
+#where{position:absolute;top:calc(env(safe-area-inset-top,0px) + 10px);left:14px;font-family:"Alegreya SC",serif;font-weight:700;font-size:1.05rem;
+  color:var(--parch);text-shadow:0 1px 3px #000,0 0 10px #000;pointer-events:none;letter-spacing:.02em}
+#cmds{position:absolute;left:10px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:3px;padding:5px;
+  background:var(--stone-bg,#2a2620);background-size:calc(20px * var(--u,3)) auto;border:1px solid #0b0a08;box-shadow:0 0 0 1px #5a5246,0 6px 18px rgba(0,0,0,.55);border-radius:2px}
+#cmds button{padding:0;border:0;background:none;cursor:pointer;line-height:0;display:block;color:var(--parch);font:600 .8rem "Alegreya SC",serif}
+#cmds button.txt{padding:6px 8px;line-height:1.2;border:1px solid var(--mortar);background:rgba(20,18,15,.7)}
+#cmds button.txt.on{border-color:var(--torch);color:var(--torch)}
+.flask{position:absolute;bottom:calc(env(safe-area-inset-bottom,0px) + 10px);filter:drop-shadow(0 3px 6px rgba(0,0,0,.7))}
+#flaskH{left:12px} #flaskM{right:12px}
+#hudC{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 8px);display:flex;flex-direction:column;align-items:center;gap:6px;pointer-events:none;max-width:calc(100% - 180px)}
+#compass{pointer-events:auto;cursor:pointer;filter:drop-shadow(0 3px 6px rgba(0,0,0,.7))}
+#msg{position:relative;text-align:center;font-style:italic;font-size:1.02rem;line-height:1.35;color:#2b2217;background:linear-gradient(#d9c9a0,#c7b183);
+  padding:.28em calc(var(--scw,6px) + .9em);border-radius:1px;box-shadow:0 3px 12px rgba(0,0,0,.55);transition:opacity .6s;max-width:34rem}
+#msg:empty{visibility:hidden}
+#msg::before,#msg::after{content:"";position:absolute;top:0;bottom:0;width:var(--scw,6px);background:var(--scroll-l,#8a6c3c) center/100% 100% no-repeat;image-rendering:pixelated}
+#msg::before{left:0} #msg::after{right:0;background-image:var(--scroll-r,none)}
+#quick{position:absolute;right:calc(var(--fw,72px) + 24px);bottom:calc(env(safe-area-inset-bottom,0px) + 12px);display:flex;flex-direction:column;gap:10px}
+.sq{width:52px;height:52px;padding:0;border:0;cursor:pointer;background:var(--sq-bg,#4b463d) center/100% 100% no-repeat;image-rendering:pixelated;
+  display:grid;place-items:center;filter:drop-shadow(0 3px 6px rgba(0,0,0,.6))}
+.sq img{width:32px;height:32px}
+#bJump span{width:16px;height:16px;border-left:4px solid #2a2520;border-top:4px solid #2a2520;transform:translateY(4px) rotate(45deg);box-shadow:-1px -1px 0 rgba(233,223,200,.35)}
+@media (hover:hover) and (pointer:fine){ #bJump{display:none} }
+#panel{position:absolute;right:14px;top:50%;transform:translateY(-50%);filter:drop-shadow(0 8px 24px rgba(0,0,0,.7))}
+#panel canvas{display:block;border:1px solid #0b0a08;box-shadow:0 0 0 1px #5a5246;touch-action:none;cursor:pointer}
+#chain{position:absolute;left:50%;bottom:0;transform:translate(-50%,85%);padding:0;border:0;background:none;cursor:pointer;line-height:0}
+#held{position:absolute;left:50%;top:50%;transform:translate(6px,6px);pointer-events:none;width:48px;filter:drop-shadow(0 2px 3px #000)}
+.modal{position:absolute;inset:0;display:grid;place-items:center;background:rgba(8,7,5,.6);padding:18px;overflow:auto}
+.stonecard .title{font-size:clamp(1.6rem,6vw,2.3rem);margin:0;line-height:1} .lead{font-family:"Alegreya SC",serif;color:var(--torch);margin:.2rem 0 1rem}
+.stack{display:grid;gap:8px} .slot{text-align:left;padding:.4rem .9rem;min-height:3rem;line-height:1.2} .slot small{display:block;font:italic 400 .82rem Alegreya,serif;color:#3a3127}
+.ccard{width:min(40rem,100%);display:grid;grid-template-columns:1fr auto;gap:18px}
+.step{font-family:"Alegreya SC",serif;color:var(--torch);margin:0 0 .2rem;font-size:.9rem}
+#ccQ{margin:0 0 .8rem} #ccOpts{display:grid;grid-template-columns:repeat(auto-fill,minmax(8.5rem,1fr));gap:8px}
+#ccOpts .head{padding:4px;min-height:auto;background:var(--sq-bg,#4b463d) center/100% 100%} #ccOpts .head canvas{width:96px;display:block;margin:auto}
+#ccNameF{display:flex;gap:8px} #ccName{flex:1;font:1.1rem Alegreya,serif;padding:6px 8px;background:#1b1814;color:var(--parch);border:1px solid #5a5246}
+.ccR{text-align:center} #ccHead{width:128px;border:1px solid #0b0a08;box-shadow:0 0 0 1px #5a5246;background:#1b1814}
+#ccStats{display:grid;grid-template-columns:auto auto;gap:2px 12px;margin:.8rem 0 0;font-family:"Alegreya SC",serif;text-align:left;text-shadow:0 1px 2px #000}
+#ccStats dt{color:var(--ash)} #ccStats dd{margin:0;text-align:right}
+@media (max-width:560px){ .ccard{grid-template-columns:1fr} .ccR{order:-1;display:flex;gap:14px;align-items:center;text-align:left} #ccHead{width:84px} #ccStats{margin:0} }
+.stonecard{width:min(26rem,100%);padding:18px 20px 16px;background:var(--stone-bg,#2a2620);background-size:calc(20px * var(--u,3)) auto;image-rendering:pixelated;
+  border:1px solid #0b0a08;box-shadow:0 0 0 2px #5a5246,0 16px 50px rgba(0,0,0,.7);color:var(--parch)}
+.stonecard h2{font-family:"Alegreya SC",serif;margin:0 0 .8rem;font-size:1.35rem;color:var(--parch);text-shadow:0 2px 3px #000}
+.lv{display:flex;align-items:center;gap:.7rem;font-family:"Alegreya SC",serif;margin-bottom:.8rem;text-shadow:0 1px 2px #000}
+.lv select{flex:1;background:#1b1814;color:var(--parch);border:1px solid #5a5246;padding:6px 8px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.sbtn{min-height:2.6rem;padding:0 .8rem;border:0;cursor:pointer;color:#1f1b16;font:700 1rem "Alegreya SC",serif;text-shadow:0 1px 0 rgba(255,255,255,.35);
+  background:var(--btn-bg,#9d968a) center/100% 100% no-repeat;image-rendering:pixelated}
+.sbtn:hover{filter:brightness(1.12)} .sbtn.wide{width:100%;margin-top:.9rem}
+.keys{font-size:.85rem;color:var(--ash);margin:.9rem 0 0;text-shadow:0 1px 2px #000}
+@media (max-width:760px),(hover:none){
+  #cmds{top:calc(env(safe-area-inset-top,0px) + 6px);left:auto;right:8px;transform:none;flex-direction:row}
+  #where{top:calc(env(safe-area-inset-top,0px) + 58px);font-size:.95rem}
+  #panel{right:50%;transform:translate(50%,-56%)}
+  #msg{font-size:.92rem}
+  #quick{right:14px;bottom:calc(env(safe-area-inset-bottom,0px) + var(--fh,100px) + 16px)}
+  #hudC{max-width:calc(100% - 150px)}
+}
+#crosshair{position:absolute;left:50%;top:50%;width:4px;height:4px;margin:-2px;background:var(--parch);opacity:.5;pointer-events:none;border-radius:50%}
+#stick{position:absolute;width:96px;height:96px;margin:-48px;border:2px solid rgba(233,223,200,.35);border-radius:50%;pointer-events:none}
+#stick>div{position:absolute;left:30px;top:30px;width:36px;height:36px;border-radius:50%;background:rgba(233,223,200,.35)}
+@media (hover:none){ #crosshair{display:none} }
+#scroll{position:absolute;inset:0;display:grid;place-items:center;background:rgba(8,7,5,.55);padding:18px}
+#scroll .sheet{max-width:30rem;width:100%;max-height:78vh;overflow:auto;background:#e6d9b8;color:#2b2217;padding:22px 24px 18px;border-radius:2px;
+  box-shadow:0 10px 40px rgba(0,0,0,.6),inset 0 0 40px rgba(120,90,40,.35)}
+#scroll h2{font-family:"Alegreya SC",serif;font-size:1.2rem;margin:0 0 .6rem;color:#5a3d17}
+#scroll .sheet>div{white-space:pre-wrap;line-height:1.6;font-size:1.05rem}
+#scroll button{margin-top:1rem;background:#2b2217;color:#e6d9b8;border:0;padding:8px 16px;border-radius:2px;font-family:"Alegreya SC",serif;cursor:pointer}
+/* conversation: stone card, portraits from CHARHEAD.GR / HEADS.GR, parchment log, numbered replies (the original's scroll of choices) */
+#talk{position:absolute;inset:0;display:grid;place-items:center;background:rgba(8,7,5,.55);padding:12px}
+#talk .tcard{width:min(44rem,100%);max-height:calc(100dvh - 24px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:10px;padding:12px 14px 14px}
+.thead{display:flex;align-items:flex-end;justify-content:space-between;gap:12px}
+.who{display:flex;align-items:flex-end;gap:10px;min-width:0} .who.me{flex-direction:row-reverse;text-align:right}
+.who canvas{width:calc(64px * var(--hs,2));border:1px solid #0b0a08;box-shadow:0 0 0 1px #5a5246;background:#1b1814;flex:none}
+.who h2{margin:0;font-size:1.25rem;line-height:1.1;overflow-wrap:anywhere} .who .role{font:italic .85rem Alegreya,serif;color:var(--ash);text-shadow:0 1px 2px #000}
+#tLog{flex:1 1 auto;min-height:5rem;overflow:auto;background:#e6d9b8;color:#2b2217;padding:12px 16px;border-radius:2px;box-shadow:inset 0 0 40px rgba(120,90,40,.35);
+  line-height:1.5;font-size:1.04rem;overscroll-behavior:contain}
+#tLog p{margin:0 0 .6em;white-space:pre-wrap;color:inherit;max-width:none} #tLog .narr{font-style:italic;color:#5a4a33}
+#tLog .you{color:#6b4410;padding-left:1.1em;text-indent:-1.1em} #tLog .you::before{content:"— "} #tLog .note{font:italic .9rem Alegreya,serif;color:#7a6a52}
+#tLog .spk{font:700 .85rem "Alegreya SC",serif;color:#5a3d17;display:block}
+#tOpts{display:grid;gap:5px;max-height:38vh;overflow:auto;flex:none} .thead{flex:none}
+#tOpts button{display:flex;gap:.6em;text-align:left;width:100%;padding:.45rem .8rem;border:1px solid #6b5a3e;background:#d9c9a0;color:#2b2217;font:1rem/1.35 Alegreya,serif;cursor:pointer;border-radius:1px}
+#tOpts button:hover,#tOpts button:focus-visible{background:#ecdcb2;border-color:var(--torch)} #tOpts b{font-family:"Alegreya SC",serif;color:#7a4e12;flex:none}
+#tTrade{flex:none;display:grid;gap:4px;background:rgba(15,14,12,.55);border:1px solid #5a5246;padding:6px 8px}
+.trow{display:flex;align-items:center;gap:8px} .trow>span{font:700 .78rem "Alegreya SC",serif;color:var(--ash);width:5.4rem;flex:none;text-shadow:0 1px 2px #000}
+.trow>div{display:flex;gap:4px;overflow-x:auto;min-height:40px}
+.tslot{position:relative;width:40px;height:40px;flex:none;padding:0;border:1px solid #6b5a3e;background:#2a2520;cursor:pointer;display:grid;place-items:center}
+.tslot img{width:32px;height:32px} .tslot.sel{border-color:var(--torch);box-shadow:0 0 0 2px var(--torch) inset;background:#4a3a22} .tslot:disabled{opacity:.35;cursor:default}
+.tslot i{position:absolute;right:2px;bottom:0;font:700 .7rem Alegreya,serif;color:var(--parch);text-shadow:0 1px 2px #000}
+#tAskF{display:flex;gap:8px} #tAsk{flex:1;font:1.05rem Alegreya,serif;padding:6px 8px;background:#1b1814;color:var(--parch);border:1px solid #5a5246}
+@media (max-width:560px){ .who h2{font-size:1.05rem} #tLog{font-size:.98rem} }
+[hidden]{display:none!important}
+</style></head>
+<body>
+<div id="loader"><div class="card">
+  <h1>Ultima Underworld II</h1>
+  <div class="sub">Labyrinth of Worlds, running on a web engine</div>
+  <p>Choose your <em>Ultima Underworld I &amp; II</em> disc image (.iso), or the files from its <code>UW2/DATA</code> folder. The game data is read here in your browser and kept on this device for next time; nothing is uploaded.</p>
+  <label class="pickbtn" tabindex="0">Choose disc image<input id="pick" type="file" multiple hidden></label>
+  <div id="status"></div><div id="err"></div>
+  <p class="fine">You can also drop the file anywhere on this page. Walk every level with its original textures, lighting, doors, stairs and ladders. Creatures are animated and wander about, and books, letters and signs can be read. You can pick things up and carry them, and talk with the people you meet. You can trade with them too. Combat and spells are not built yet.</p>
+</div></div>
+<div id="game" hidden>
+  <canvas id="view" class="chunky"></canvas>
+  <canvas id="map" hidden></canvas>
+  <div id="crosshair"></div>
+  <img id="held" class="px" hidden alt="">
+  <div id="stick" hidden><div></div></div>
+  <div id="where"></div>
+  <nav id="cmds" aria-label="Commands"></nav>
+  <canvas id="flaskH" class="flask px" title="Vitality"></canvas>
+  <canvas id="flaskM" class="flask px" title="Mana"></canvas>
+  <div id="hudC"><div id="msg"></div><canvas id="compass" class="px" title="Compass"></canvas></div>
+  <div id="quick"><button id="bBag" class="sq" aria-label="Inventory (I)"><img class="px" alt=""></button><button id="bJump" class="sq" aria-label="Jump (J)"><span></span></button></div>
+  <div id="panel" hidden><canvas id="pcv" class="px" width="79" height="112"></canvas><button id="chain" aria-label="Flip between inventory and character"><img class="px" alt=""></button></div>
+  <div id="opts" class="modal" hidden role="dialog" aria-modal="true" aria-label="Options"><div class="stonecard">
+    <h2>Options</h2>
+    <label class="lv">Level<select id="lvl"></select></label>
+    <div class="grid"><button id="bSave" class="sbtn">Save game</button><button id="bLoad" class="sbtn">Load game</button><button id="bNew" class="sbtn">New character</button><button id="bMap" class="sbtn">Map</button><button id="bLight" class="sbtn">Lantern</button><button id="bPix" class="sbtn">320×200</button><button id="bData" class="sbtn" title="Forget the stored game data">Forget data</button></div>
+    <p class="keys">WASD move · Shift run · J jump · E act · G get · T talk · I inventory · M map · L light · 1–9 reply · Esc close</p>
+    <button id="bOptClose" class="sbtn wide">Return to game</button>
+  </div></div>
+  <div id="menu" class="modal" hidden role="dialog" aria-modal="true" aria-label="Main menu"><div class="stonecard">
+    <h2 class="title">Ultima Underworld II</h2><p class="lead">Labyrinth of Worlds</p>
+    <div id="menuBody"></div>
+  </div></div>
+  <div id="cc" class="modal" hidden role="dialog" aria-modal="true" aria-label="Create a character"><div class="stonecard ccard">
+    <div class="ccL"><p class="step" id="ccStep"></p><h2 id="ccQ"></h2><div id="ccOpts"></div>
+      <form id="ccNameF" hidden><input id="ccName" maxlength="14" autocomplete="off" spellcheck="false"><button class="sbtn">Done</button></form></div>
+    <div class="ccR"><canvas id="ccHead" class="px" width="64" height="70"></canvas><dl id="ccStats"></dl></div>
+  </div></div>
+  <div id="talk" hidden role="dialog" aria-modal="true" aria-label="Conversation"><div class="stonecard tcard">
+    <div class="thead"><div class="who"><canvas id="tPic" class="px" width="64" height="70"></canvas><div><h2 id="tName"></h2><div class="role" id="tRole"></div></div></div>
+      <div class="who me"><canvas id="tMe" class="px" width="64" height="70"></canvas><div><h2 id="tMeName"></h2></div></div></div>
+    <div id="tLog" aria-live="polite"></div>
+    <div id="tTrade" hidden><div class="trow"><span>Their goods</span><div id="tTheirs"></div></div><div class="trow"><span>Your offer</span><div id="tOffer"></div></div><div class="trow" id="tPackL"><span>Your pack</span><div id="tPack"></div></div></div>
+    <div id="tOpts" role="group" aria-label="Your reply"></div>
+    <form id="tAskF" hidden><input id="tAsk" maxlength="40" autocomplete="off" spellcheck="false" aria-label="What do you say?"><button class="sbtn">Say</button></form>
+  </div></div>
+  <div id="scroll" hidden role="dialog" aria-modal="true"><div class="sheet"><h2></h2><div></div><button id="bClose">Close</button></div></div>
+</div>
+<script type="module">
+// UW2 data parsers (shared by node tests and the page)
+function u16(b,o){return b[o]|(b[o+1]<<8);}
+function u32(b,o){return (b[o]|(b[o+1]<<8)|(b[o+2]<<16)|(b[o+3]<<24))>>>0;}
+
+function uw2Decompress(src){
+  const size=u32(src,0); const out=new Uint8Array(size);
+  let i=4,o=0;
+  while(o<size && i<src.length){
+    let bits=src[i++];
+    for(let k=0;k<8 && o<size && i<src.length;k++,bits>>=1){
+      if(bits&1){ out[o++]=src[i++]; }
+      else{
+        const m1=src[i++], m2=src[i++];
+        let ofs=m1|((m2&0xF0)<<4); let len=(m2&0x0F)+3;
+        if(ofs&0x800) ofs|=~0xFFF; // sign extend 12 bit
+        ofs+=18;
+        while(ofs<o-0x1000) ofs+=0x1000;
+        while(len--){ out[o++]= ofs>=0 && ofs<o ? out[ofs] : 0; ofs++; }
+      }
+    }
+  }
+  return out;
+}
+
+function readArk(buf){
+  const n=u16(buf,0); const blocks=[];
+  for(let i=0;i<n;i++){
+    const off=u32(buf,6+i*4), flags=u32(buf,6+n*4+i*4), size=u32(buf,6+n*8+i*4);
+    if(!off){blocks.push(null);continue;}
+    let data=buf.subarray(off,off+(flags&2?Math.max(size,u32(buf,6+n*12+i*4)):size));
+    if(flags&2) data=uw2Decompress(data); else data=data.slice(0,size);
+    blocks.push(data);
+  }
+  return blocks;
+}
+
+// .GR image files. Returns [{w,h,px:Uint8Array palette indices (0 = transparent)}]
+function readGR(buf, allpals){
+  const n=u16(buf,1); const imgs=[];
+  for(let i=0;i<n;i++){
+    const off=u32(buf,3+i*4);
+    if(off>=buf.length){imgs.push(null);continue;}
+    const type=buf[off], w=buf[off+1], h=buf[off+2];
+    const px=new Uint8Array(w*h);
+    try{
+      if(type===4){ px.set(buf.subarray(off+5,off+5+w*h)); }
+      else if(type===0xA||type===8){
+        const aux=buf[off+3]; const len=u16(buf,off+4); const ap=allpals.subarray(aux*16,aux*16+16);
+        let p=off+6, hi=true, left=len;
+        const nib=()=>{ left--; if(hi){hi=false;return buf[p]>>4;} hi=true; return buf[p++]&15; };
+        if(type===0xA){ for(let k=0;k<w*h&&left>0;k++) px[k]=ap[nib()]; }
+        else{
+          const cnt=()=>{ let c=nib(); if(c===0){ c=(nib()<<4)|nib(); if(c===0){ c=(((nib()<<4)|nib())<<4)|nib(); } } return c; };
+          let o=0, state=0, count=0, rep=0; const max=w*h;
+          while(o<max && left>0){
+            if(state===0){ count=cnt(); if(count===1) state=2; else if(count===2){ rep=cnt()-1; } else state=1; }
+            else if(state===1){ const v=ap[nib()]; for(let k=0;k<count&&o<max;k++) px[o++]=v; if(rep>0){rep--;state=0;} else state=2; }
+            else { count=cnt(); for(let k=0;k<count&&o<max;k++) px[o++]=ap[nib()]; state=0; }
+          }
+        }
+      } else { imgs.push({w,h,px,type}); continue; }
+    }catch(e){}
+    imgs.push({w,h,px,type});
+  }
+  return imgs;
+}
+
+// STRINGS.PAK huffman strings. Returns Map(blockId -> string[])
+function readStrings(buf){
+  const nn=u16(buf,0); const nodes=[];
+  for(let i=0;i<nn;i++){ const p=2+i*4; nodes.push([buf[p],buf[p+1],buf[p+2],buf[p+3]]); }
+  let p=2+nn*4; const nb=u16(buf,p); p+=2; const res=new Map();
+  for(let b=0;b<nb;b++){
+    const id=u16(buf,p+b*6), off=u32(buf,p+b*6+2);
+    const ns=u16(buf,off); const strs=[];
+    for(let s=0;s<ns;s++){
+      let bp=off+2+ns*2+u16(buf,off+2+s*2), bit=7, out='';
+      for(let guard=0;guard<2000;guard++){
+        let n=nn-1;
+        while(nodes[n][2]!==255){ const v=(buf[bp]>>bit)&1; if(--bit<0){bit=7;bp++;} n= v? nodes[n][3]:nodes[n][2]; }
+        const ch=nodes[n][0]; if(ch===124) break; out+=String.fromCharCode(ch);
+      }
+      strs.push(out);
+    }
+    res.set(id,strs);
+  }
+  return res;
+}
+
+// Generic UW RLE (bits = 4 for .GR, 5 for critters). Returns palette-mapped pixels, 0 = transparent.
+function rleDecode(buf,p,words,w,h,bits,map){
+  const px=new Uint8Array(w*h); let bitpos=0, left=words; const mask=(1<<bits)-1;
+  const word=()=>{ left--; let v=0; for(let k=0;k<bits;k++){ const byte=buf[p+(bitpos>>3)]; v=(v<<1)|((byte>>(7-(bitpos&7)))&1); bitpos++; } return v; };
+  const cnt=()=>{ let c=word(); if(c===0){ c=(word()<<4)|word(); if(c===0){ c=(((word()<<4)|word())<<4)|word(); } } return c; }; // counts always shift by 4, even for 5-bit words
+  let o=0, state=0, count=0, rep=0; const max=w*h;
+  while(o<max && left>0){
+    if(state===0){ count=cnt(); if(count===1) state=2; else if(count===2){ rep=cnt()-1; } else state=1; }
+    else if(state===1){ const v=map[word()]; for(let k=0;k<count&&o<max;k++) px[o++]=v; if(rep>0){rep--;state=0;} else state=2; }
+    else { count=cnt(); for(let k=0;k<count&&o<max;k++) px[o++]=map[word()]; state=0; }
+  }
+  return px;
+}
+// One critter page file: 4 aux palettes of 32 at 0, 256 frame offsets at 0x80
+function readCritPage(buf,aux){
+  const map=buf.subarray(aux*32,aux*32+32); const frames=[];
+  for(let i=0;i<256;i++){ const off=u16(buf,0x80+i*2); if(!off||off>=buf.length){ frames.push(null); continue; }
+    const w=buf[off],h=buf[off+1],hx=buf[off+2],hy=buf[off+3],type=buf[off+4],words=u16(buf,off+5);
+    const bits= type===6?5:4;
+    frames.push({w,h,hx,hy,type,px:rleDecode(buf,off+7,words,w,h,bits,map)});
+  }
+  return frames;
+}
+
+// UW2.EXE builtin 3D models. The offset table is found by its signature (0x54cf0 in the GOG build); model data sits at
+// table+0x9a. Node format per Underworld Adventures' ModelDecoder. Colour slots map to palette indices via UA's table.
+// Returns 32 models: {tris:[{p:[v,v,v], uv:[[u,v]x3]|null, pal, tex}]}; v=[x,y,z,ceil] in tile units, x east, y north, z up.
+const MODEL_COLS=[[0x8F],[0x93],[0x8F],[0x8C],[0x21,0x1B],[0xC6,0xCC],[0xC6,0xCC],[0xC6,0xCC],[0x88,0x23,0x56],[0x8C],[0x8C],[0xB9,0xBA,0xBC],[0xCA],[0x8D],[0x8F],[0x8F],
+ [0x1B],[0x1B],[0x1B],[0xCB],[0x1B],[0x1B],[0x1B],[0x21,0x02,0x04],[0x8E,0xCA],[0x8E,0xCA],[0x8C],[0x8C,0xCB],[0x8F],[0x31,0xC6,0x52,0x4D],[0xCC,0x02],[0x15,0x35]];
+function readModels(exe){
+  let tab=-1; for(let i=0;i<exe.length-4;i++) if(exe[i]===0xd4&&exe[i+1]===0x64&&exe[i+2]===0xaa&&exe[i+3]===0x59){ tab=i; break; }
+  if(tab<0) return null; const base=tab+0x9a;
+  const r16=o=>exe[o]|exe[o+1]<<8, fx=o=>{ const v=r16(o); return (v&0x8000?v-65536:v)/256; };
+  const out=[];
+  for(let n=0;n<32;n++){
+    const V=[], tris=[]; let depth=0;
+    const col=off=>{ const k=(off-0x2680)>>1, t=MODEL_COLS[n]; return k>=0&&k<t.length?t[k]:0; };
+    const face=(vs,uv,pal,tex)=>{ const q=vs.map(k=>V[k]); if(q.some(v=>!v)) return;
+      for(let i=1;i+1<q.length;i++) tris.push({p:[q[0],q[i],q[i+1]],uv:uv?[uv[0],uv[i],uv[i+1]]:null,pal,tex}); };
+    const off=(v,axis,d)=>{ const r=v?v.slice():[0,0,0,0]; r[axis]+=d; return r; };
+    const node=(p,pal)=>{ if(++depth>64){ depth--; return; }
+      for(let guard=0;guard<4000;guard++){ const c=r16(p); p+=2;
+        switch(c){
+          case 0x00: depth--; return;
+          case 0x78: p+=10; break;
+          case 0x4a: p+=6; break;
+          case 0xba: { const pl=col(r16(p)), u=r16(p+2); p+=4; node(p-((-u)&0xffff),pl); break; }
+          case 0x7a: V[r16(p+6)>>3]=[fx(p),fx(p+2),fx(p+4),0]; p+=8; break;
+          case 0x82: { const nv=r16(p), v0=r16(p+2); p+=4; for(let i=0;i<nv;i++){ V[v0+i]=[fx(p),fx(p+2),fx(p+4),0]; p+=6; } break; }
+          case 0x86: case 0x88: case 0x8a: V[r16(p+4)>>3]=off(V[r16(p)>>3],c===0x86?0:c===0x8a?1:2,fx(p+2)); p+=6; break;
+          case 0x90: case 0x92: case 0x94: { const a=fx(p), b=fx(p+2); let v=V[r16(p+4)>>3];
+            v=c===0x90?off(off(v,0,a),2,b):c===0x92?off(off(v,0,a),1,b):off(off(v,1,a),2,b); V[r16(p+6)>>3]=v; p+=8; break; }
+          case 0x8c: { const v=(V[r16(p)>>3]||[0,0,0,0]).slice(); v[2]=4; v[3]=1; V[r16(p+4)>>3]=v; p+=6; break; } // reaches the ceiling
+          case 0x58: p+=14; break;
+          case 0x64: case 0x66: case 0x68: p+=6; break;
+          case 0x5e: case 0x60: case 0x62: p+=10; break;
+          case 0x7e: { const nv=r16(p); p+=2; const vs=[]; for(let i=0;i<nv;i++){ vs.push(r16(p)>>3); p+=2; } face(vs,null,pal,-1); break; }
+          case 0xa8: case 0xb4: case 0xce: { let t=-1; if(c===0xa8){ t=r16(p); p+=2; } const nv=r16(p); p+=2; const vs=[], uv=[];
+            for(let i=0;i<nv;i++){ vs.push(r16(p)>>3); uv.push([r16(p+2)/65535,r16(p+4)/65535]); p+=6; } face(vs,uv,pal,t); break; }
+          case 0xa0: case 0xd2: { let t=-1; if(c===0xa0){ t=r16(p); p+=2; } face([exe[p],exe[p+1],exe[p+2],exe[p+3]],[[0,0],[1,0],[1,1],[0,1]],pal,t); p+=4; break; }
+          case 0x06: p+=4; // falls through: arbitrary sort plane carries one more normal/distance pair
+          case 0x0c: case 0x0e: case 0x10: { p+=8; const l=r16(p)+p+2, rr=r16(p+2)+p+4; p+=4; node(l,pal); node(rr,pal); break; }
+          case 0x14: pal=col(r16(p+2)); p+=6; break;
+          case 0xbc: pal=col(r16(p)); p+=4; break;
+          case 0xbe: pal=col(r16(p+2)); p+=4; break;
+          case 0xd4: { const nv=r16(p); pal=col(r16(p+2)); p+=4+nv*3+(nv&1); break; }
+          case 0xd6: case 0x40: case 0x44: break;
+          case 0x16: pal=col(r16(p+2)); p+=6; break;
+          case 0x12: case 0x2e: case 0xb2: p+=2; break;
+          default: depth--; return; // unknown node: keep what we have
+        } }
+      depth--; };
+    node(base+r16(tab+n*2)+10,0);
+    out.push({tris});
+  }
+  return out;
+}
+// PANELS.GR: headerless 79x112 8-bit bitmaps (0 inventory, 1 rune bag, 2 statistics)
+function readPanels(buf){ const n=u16(buf,1), out=[]; for(let i=0;i<n;i++){ const o=u32(buf,3+i*4), e=i+1<n?u32(buf,7+i*4):buf.length;
+  out.push(e-o>=79*112?{w:79,h:112,px:buf.subarray(o,o+79*112),opaque:true}:null); } return out; }
+// .SYS bitmap fonts: u16 ?, charsize, spacewidth, height, rowbytes, maxwidth; then per char rows (MSB first) + width byte. Index = ASCII.
+function readFont(buf){ const cs=u16(buf,2), h=u16(buf,6), rw=u16(buf,8), n=Math.floor((buf.length-12)/(cs+1)), g=[];
+  for(let i=0;i<n;i++){ const o=12+i*(cs+1); g.push({w:buf[o+cs],bit:(x,y)=>(buf[o+y*rw+(x>>3)]>>(7-(x&7)))&1}); }
+  return {h,space:u16(buf,4),g}; }
+// PLAYER.DAT (initial, unencrypted). STR/DEX/INT/skills per UA; vitality/mana are two bytes earlier than UA's UW1 layout (unverified).
+function readPlayer(b){ if(!b||b.length<0x40) return null; let name=''; for(let i=0;i<14&&b[i];i++) name+=String.fromCharCode(b[i]);
+  return {name,str:b[0x1e],dex:b[0x1f],int:b[0x20],skills:Array.from(b.subarray(0x21,0x34)),vit:[b[0x34],b[0x35]],mana:[b[0x36],b[0x37]]}; }
+
+// ---- conversations (CNV.ARK) ----
+// Block: u16 magic 0x0828, 0, code words, 0, 0, string block (0x0e00+slot), globals G, import count; imports; code (u16 words).
+function readConv(b){
+  if(!b||b.length<16||u16(b,0)!==0x0828) return null;
+  const words=u16(b,4), strBlock=u16(b,0xA), G=u16(b,0xC), ni=u16(b,0xE); let p=0x10; const imports=[];
+  for(let i=0;i<ni;i++){ const n=u16(b,p); p+=2; let name=''; for(let k=0;k<n;k++) name+=String.fromCharCode(b[p+k]); p+=n;
+    imports.push({name,id:u16(b,p),kind:u16(b,p+4)===0x0111?'fn':'var',ret:u16(b,p+6)}); p+=8; }
+  const code=new Uint16Array(words); for(let i=0;i<words;i++) code[i]=u16(b,p+i*2);
+  const fns=[]; for(const im of imports) if(im.kind==='fn') fns[im.id]=im.name;
+  return {strBlock,G,imports,fns,code};
+}
+// BABGLOBS.DAT: (u16 slot, u16 size) pairs
+function readBabGlobs(b){ const m=new Map(); if(b) for(let p=0;p+3<b.length;p+=4) m.set(u16(b,p),u16(b,p+2)); return m; }
+const CONV_OPS=['NOP','OPADD','OPMUL','OPSUB','OPDIV','OPMOD','OPOR','OPAND','OPNOT','TSTGT','TSTGE','TSTLT','TSTLE','TSTEQ','TSTNE','JMP','BEQ','BNE','BRA','CALL','CALLI','RET','PUSHI','PUSHI_EFF','POP','SWAP','PUSHBP','POPBP','SPTOBP','BPTOSP','ADDSP','FETCHM','STO','OFFSET','START','SAVE_REG','PUSH_REG','STRCMP','EXIT_OP','SAY_OP','RESPOND_OP','OPNEG'];
+const CONV_IMM=new Set([0x0F,0x10,0x11,0x12,0x13,0x14,0x16,0x17]);
+function disConv(cv,from=0,to=cv.code.length){ const c=cv.code, out=[]; for(let pc=from;pc<to;){ const op=c[pc]; let s=pc.toString(16).padStart(4,'0')+'  '+(CONV_OPS[op]||('??'+op));
+    if(CONV_IMM.has(op)){ let v=c[pc+1]; if(op===0x10||op===0x11||op===0x12){ v=(v<<16>>16); s+=" "+v+" -> "+(pc+1+v).toString(16); } else if(op===0x14) s+=' '+(cv.fns[v]||v); else if(op===0x17) s+=' '+(v<<16>>16); else s+=' 0x'+v.toString(16); pc+=2; } else pc++; out.push(s); } return out; }
+// Resumable conversation VM. host: {say(text), print(text), fn(name,vals,ptrs,vm) -> number|undefined}
+// Builtins receive argc at mem[sp] and argument POINTERS at sp-1 (arg 1), sp-2, ...; menus push a false count of 0.
+// State after run(): 'menu' (vm.menu = [{text,value}]), 'ask', 'done', 'error' (vm.err).
+const CONV_REAL_ARGS={babl_menu:1,babl_fmenu:2};
+class ConvVM{
+  constructor(cv,strings,host){ this.cv=cv; this.S=strings||[]; this.host=host||{}; this.G=cv.G;
+    this.mem=new Int32Array(cv.G+65536); this.sp=cv.G-1; this.bp=cv.G-1; this.pc=0; this.result=0; this.rs=[]; this.state='run'; this.menu=null; this.err=null; this.quests=null; this.clocks=null; this.said=new Set(); }
+  str(id){ if(id>=0x7000) return this.rs[id-0x7000] ?? ''; if(id>=512) return this.host.gstr?.(id>>9,id&511) ?? ''; return id>=0&&id<this.S.length ? this.S[id] : ''; }
+  newStr(t){ this.rs.push(String(t)); return 0x7000+this.rs.length-1; }
+  // @ + source (G global, S local, P pointer in a local) + type (S string, I integer) + number, optionally an index into that
+  // array in the same form without @ ("@GS70SI1" = string at global 70 + local1 - 1) and C<n> (element n, 1-based).
+  expand(t,depth=0){ const m=this.mem, bp=this.bp;
+    const addr=(s,n)=> s==='G'? n : s==='S'? bp+n : m[bp+n];
+    return String(t).replace(/@([GSP])([SI])(-?\d+)(?:([GSP])([SI])(-?\d+))?(?:C(\d+))?/g,(all,s1,t1,n1,s2,t2,n2,c)=>{
+      let a=addr(s1,+n1); if(s2) a+=m[addr(s2,+n2)]-1; if(c) a+=(+c)-1;
+      if(a<0||a>=m.length) return ''; const v=m[a]; const out=t1==='S'?this.str(v):String(v);
+      return depth<1&&out.includes('@')?this.expand(out,depth+1):out; }); } // \1 ... \0 (kept) marks words spoken as the player
+  push(v){ if(++this.sp>=this.mem.length) throw new Error('stack overflow'); this.mem[this.sp]=v; }
+  pop(){ if(this.sp<this.G) throw new Error('stack underflow at '+this.pc.toString(16)); return this.mem[this.sp--]; }
+  rd(a){ if(a<0||a>=this.mem.length) throw new Error('bad address '+a); return this.mem[a]; }
+  wr(a,v){ if(a<0||a>=this.mem.length) throw new Error('bad address '+a); this.mem[a]=v; }
+  answer(v){ this.said.clear(); if(this.state==='ask') this.result=this.newStr(v); else if(this.state!=='more') this.result=v|0; this.menu=null; this.state='run'; return this.run(); }
+  run(budget=2000000){
+    const c=this.code||(this.code=this.cv.code), w=v=>(v<<16)>>16;
+    try{
+      while(this.state==='run'){
+        if(--budget<0) throw new Error('runaway program at '+this.pc.toString(16));
+        const pc=this.pc; if(pc<0||pc>=c.length) throw new Error('pc out of range '+pc);
+        const op=c[pc], imm=c[pc+1]; this.pc=pc+1; let a,b;
+        switch(op){
+          case 0x00: case 0x22: break;                                   // NOP, START
+          case 0x01: a=this.pop(); b=this.pop(); this.push(w(b+a)); break;
+          case 0x02: a=this.pop(); b=this.pop(); this.push(w(b*a)); break;
+          case 0x03: a=this.pop(); b=this.pop(); this.push(w(b-a)); break;
+          case 0x04: a=this.pop(); b=this.pop(); this.push(a?w(Math.trunc(b/a)):0); break;
+          case 0x05: a=this.pop(); b=this.pop(); this.push(a?w(b%a):0); break;
+          case 0x06: a=this.pop(); b=this.pop(); this.push(b||a?1:0); break;
+          case 0x07: a=this.pop(); b=this.pop(); this.push(b&&a?1:0); break;
+          case 0x08: this.push(this.pop()?0:1); break;
+          case 0x09: a=this.pop(); b=this.pop(); this.push(b>a?1:0); break;
+          case 0x0A: a=this.pop(); b=this.pop(); this.push(b>=a?1:0); break;
+          case 0x0B: a=this.pop(); b=this.pop(); this.push(b<a?1:0); break;
+          case 0x0C: a=this.pop(); b=this.pop(); this.push(b<=a?1:0); break;
+          case 0x0D: a=this.pop(); b=this.pop(); this.push(b===a?1:0); break;
+          case 0x0E: a=this.pop(); b=this.pop(); this.push(b!==a?1:0); break;
+          case 0x0F: this.pc=imm; break;                                  // JMP absolute
+          case 0x10: this.pc=this.pop()===0? pc+1+w(imm) : pc+2; break;   // BEQ: relative to the operand word
+          case 0x11: this.pc=this.pop()!==0? pc+1+w(imm) : pc+2; break;
+          case 0x12: this.pc=pc+1+w(imm); break;                          // BRA
+          case 0x13: this.push(pc+2); this.pc=imm; break;                 // CALL
+          case 0x14: this.pc=pc+2; this.calli(imm); break;
+          case 0x15: if(this.sp<this.G){ this.state='done'; break; } this.pc=this.pop(); break; // RET (from the bootstrap = end)
+          case 0x16: this.push(w(imm)); this.pc=pc+2; break;              // PUSHI
+          case 0x17: this.push(this.bp+w(imm)); this.pc=pc+2; break;      // PUSHI_EFF
+          case 0x18: this.pop(); break;
+          case 0x19: a=this.pop(); b=this.pop(); this.push(a); this.push(b); break;
+          case 0x1A: this.push(this.bp); break;
+          case 0x1B: this.bp=this.pop(); break;
+          case 0x1C: this.bp=this.sp; break;
+          case 0x1D: this.sp=this.bp; break;
+          case 0x1E: a=this.pop(); this.sp+=a; if(this.sp>=this.mem.length) throw new Error('stack overflow'); break;
+          case 0x1F: this.push(this.rd(this.pop())); break;               // FETCHM
+          case 0x20: a=this.pop(); b=this.pop(); this.wr(b,w(a)); break;   // STO: value on top, address below
+          case 0x21: a=this.pop(); b=this.pop(); this.push(a+b-1); break;  // OFFSET: base on top, 1-based index below
+          case 0x23: this.result=this.pop(); break;
+          case 0x24: this.push(this.result); break;
+          case 0x25: a=this.pop(); b=this.pop(); this.push(this.str(a).toLowerCase()===this.str(b).toLowerCase()?1:0); break;
+          case 0x26: this.state='done'; break;                            // EXIT_OP
+          case 0x27: if(this.said.has(pc)){ this.state='done'; this.note='the same line again without a reply at '+pc.toString(16); break; } this.said.add(pc); this.host.say?.(this.expand(this.str(this.pop()))); break; // slot 8 loops on a line forever
+          case 0x28: this.pop(); break;                                   // RESPOND_OP (unused on the disc)
+          case 0x29: this.push(w(-this.pop())); break;
+          default: throw new Error('unknown opcode '+op+' at '+pc.toString(16));
+        }
+      }
+    }catch(e){ this.state='error'; this.err=e.message; }
+    return this.state;
+  }
+  calli(id){
+    const name=this.cv.fns[id]||('fn'+id), n=CONV_REAL_ARGS[name]??this.mem[this.sp], m=this.mem;
+    const ptrs=[]; for(let i=1;i<=n;i++) ptrs.push(m[this.sp-i]); const val=i=>this.rd(ptrs[i]); const S=i=>this.str(val(i));
+    const lc=s=>s.toLowerCase();
+    switch(name){
+      case 'babl_menu': case 'babl_fmenu': { const arr=ptrs[0], fl=name==='babl_fmenu'?ptrs[1]:-1, opts=[];
+        for(let i=0;i<64&&m[arr+i];i++){ if(fl>=0&&!m[fl+i]) continue; const id=m[arr+i]; opts.push({text:this.expand(this.str(id)),value:fl>=0?id:i+1}); }
+        this.menu=opts; this.state='menu'; return; }   // babl_menu answers the 1-based position, babl_fmenu the chosen string id
+      case 'babl_ask': this.state='ask'; return;
+      case 'print': this.host.print?.(this.expand(S(0))); return;
+      case 'random': this.result=1+Math.floor(Math.random()*Math.max(1,val(0))); return;
+      case 'compare': this.result=lc(S(0))===lc(S(1))?1:0; return;
+      case 'contains': this.result=lc(S(0)).includes(lc(S(1)))?1:0; return; // (typed text, keyword)
+      case 'sex': this.result=this.host.female?.()?val(0):val(1); return;  // (female string, male string)
+      case 'length': this.result=S(0).length; return;
+      case 'val': this.result=parseInt(S(0),10)||0; return;
+      case 'append': { const s=S(0)+S(1); this.result=this.newStr(s); this.wr(ptrs[0],this.result); return; }
+      case 'copy': this.result=this.newStr(S(0)); if(n>1) this.wr(ptrs[1],this.result); return;
+      case 'find': this.result=lc(S(0)).indexOf(lc(S(1)))+1; return;
+      case 'plural': this.result=val(0); return;
+      case 'get_quest': this.result=this.quests?.[val(0)]|0; return;
+      case 'set_quest': if(this.quests) this.quests[val(1)]=val(0); this.result=val(0); return; // (value, index)
+      case 'x_clock': { const k=val(1), v=val(0); if(!this.clocks){ this.result=0; return; } if(v>0x100) this.result=this.clocks[k]|0; else { if(k) this.clocks[k]=v; this.result=0; } return; } // (value, or >0x100 to read; clock)
+      case 'do_input_wait': this.result=0; return;
+      case 'pause': this.result=0; this.state='more'; return; // wait for the player to read on
+    }
+    const r=this.host.fn?.(name,ptrs.map((p,i)=>val(i)),ptrs,this); this.result=r==null?0:r|0;
+  }
+}
+
+// Mobile (NPC) record extras, 27-byte record at a. whoami at 0x1a (UW2; UW1 had it at 0x19). The rest follows UW1's layout,
+// which fits level 0 (home tile matches the record's tile for every NPC; attitude 3 on Britannia's people, 0 on slugs).
+function readNpc(L,a){ const g=u16(L,a+0xb), d=u16(L,a+0xd), h=u16(L,a+0x16);
+  return {who:L[a+0x1a],hp:L[a+8],goal:g&15,gtarg:(g>>4)&255,level:d&15,talked:(d>>13)&1,att:d>>14,xhome:h>>10,yhome:(h>>4)&63,hunger:L[a+0x18]&127,
+    loot:(d>>12)&1,b0a7:(L[a+0xa]>>7)&1}; } // loot = inventory already spawned (bit 12 of 0x0D); b0a7 = babl_hack 5's flag
+// ===== Ultima Underworld II web engine =====
+const NEEDED=['LEV.ARK','T64.TR','PALS.DAT','LIGHT.DAT','OBJECTS.GR','ALLPALS.DAT','DOORS.GR','STRINGS.PAK'];
+const OPTIONAL=['HEADS.GR','SKILLS.DAT','TMFLAT.GR','TMOBJ.GR','PANELS.GR','BODIES.GR','FLASKS.GR','COMPASS.GR','LFTI.GR','CHAINS.GR','CHRBTNS.GR','SCRLEDGE.GR','PLAYER.DAT','FONT5X6P.SYS','UW2.EXE','CNV.ARK','BABGLOBS.DAT','CHARHEAD.GR','GENHEAD.GR','OBJECTS.DAT','COMOBJ.DAT']; // switches, 3D models, interface art, conversations + portraits
+const $=s=>document.querySelector(s);
+
+// ---------- ISO 9660 ----------
+const isCritName=n=>/^(AS\.AN|CR\.AN|PG\.MP|CR[0-7][0-7]\.[0-9][0-9])$/.test(n);
+function isoExtract(u8){
+  const S=2048;
+  if(String.fromCharCode(...u8.subarray(0x8001,0x8006))!=='CD001') throw new Error('That file is not an ISO 9660 disc image.');
+  const list=(lba,size)=>{ const out=[]; let p=lba*S; const end=p+size;
+    while(p<end){ const len=u8[p]; if(!len){ p=(Math.floor(p/S)+1)*S; continue; }
+      const nl=u8[p+32]; let name=''; for(let i=0;i<nl;i++) name+=String.fromCharCode(u8[p+33+i]);
+      out.push({name:name.split(';')[0].toUpperCase(), lba:u32(u8,p+2), size:u32(u8,p+10), dir:!!(u8[p+25]&2)}); p+=len; }
+    return out; };
+  let dir={lba:u32(u8,0x8000+156+2), size:u32(u8,0x8000+156+10)};
+  const uw2=list(dir.lba,dir.size).find(e=>e.dir&&e.name==='UW2');
+  const sub=uw2&&list(uw2.lba,uw2.size); const data=sub&&sub.find(e=>e.dir&&e.name==='DATA'), crit=sub&&sub.find(e=>e.dir&&e.name==='CRIT');
+  if(!data) throw new Error('This disc image has no UW2/DATA folder. Choose the Ultima Underworld I & II disc.');
+  const files={}; const grab=(e,key)=>files[key]=u8.slice(e.lba*S,e.lba*S+e.size);
+  for(const e of list(data.lba,data.size)) if(!e.dir&&(NEEDED.includes(e.name)||OPTIONAL.includes(e.name))) grab(e,e.name);
+  if(crit) for(const e of list(crit.lba,crit.size)) if(!e.dir&&isCritName(e.name)) grab(e,'CRIT/'+e.name);
+  for(const e of sub) if(!e.dir&&e.name==='UW2.EXE') grab(e,'UW2.EXE'); // furniture models live in the executable
+  return files;
+}
+
+// ---------- IndexedDB cache ----------
+// Storage is a convenience, never a gate: every call times out and failures resolve to null/false.
+// (Inside the claude.ai viewer IndexedDB may be slow, partitioned or unavailable; the game must start regardless.)
+const withTimeout=(pr,ms,v)=>Promise.race([pr.catch(()=>v),new Promise(r=>setTimeout(()=>r(v),ms))]);
+let dbP=null;
+function idb(){ return dbP||(dbP=withTimeout(new Promise((res,rej)=>{ const r=indexedDB.open('uw2-engine',1); r.onupgradeneeded=()=>r.result.createObjectStore('kv');
+  r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); r.onblocked=()=>rej(new Error('blocked')); }),5000,null)); }
+async function kvGet(k){ try{ const db=await idb(); if(!db) return null; return await withTimeout(new Promise(res=>{ const q=db.transaction('kv').objectStore('kv').get(k); q.onsuccess=()=>res(q.result??null); q.onerror=()=>res(null); }),5000,null); }catch(e){ return null; } }
+async function kvPut(k,v){ try{ const db=await idb(); if(!db) return false; return await withTimeout(new Promise(res=>{ const t=db.transaction('kv','readwrite'); t.objectStore('kv').put(v,k); t.oncomplete=()=>res(true); t.onerror=t.onabort=()=>res(false); }),20000,false); }catch(e){ return false; } }
+async function kvDel(k){ try{ const db=await idb(); if(!db) return false; return await withTimeout(new Promise(res=>{ const t=db.transaction('kv','readwrite'); t.objectStore('kv').delete(k); t.oncomplete=()=>res(true); t.onerror=t.onabort=()=>res(false); }),5000,false); }catch(e){ return false; } }
+const cacheGet=()=>kvGet('data'), cachePut=v=>kvPut('data',v), cacheClear=()=>kvDel('data');
+
+// ---------- constants ----------
+const HU=0.25, CEIL=16, CEILY=CEIL*HU, EYE=0.62, RAD=0.2, STEP=0.3, BODY=0.75, CRAD=0.16, CBODY=0.8, JUMPV=3.2;
+const WORLDS=['Britannia','Prison Tower','Killorn Keep','Ice Caverns','Talorus','Scintillus Academy','Tomb of Praecor Loth','Pits of Carnage','Ethereal Void','Ethereal Void'];
+const levelName=i=>`${WORLDS[i>>3]||'Level'} ${ (i&7)+1 }`;
+const SIDE_CORNERS=[[3,2],[2,1],[1,0],[0,3]]; // N,E,S,W as corner indices (0 sw,1 se,2 ne,3 nw)
+const CORNER_POS=[[0,0],[1,0],[1,1],[0,1]];
+const OPP_CORNER=[[0,1],[3,0],[2,3],[1,2]]; // neighbor corner indices matching SIDE_CORNERS[s]
+const DIRS=[[0,1],[1,0],[0,-1],[-1,0]];
+function sideOpen(type,s){ if(type===0) return false;
+  if(type===2) return s===1||s===2; if(type===3) return s===2||s===3; if(type===4) return s===0||s===1; if(type===5) return s===0||s===3; return true; }
+
+// ---------- game data ----------
+let G=null; // {levels, texmaps, pal, light, names, objImgs, doorImgs}
+function prepare(files){
+  const levels=readArk(files['LEV.ARK']);
+  const t=files['T64.TR']; const nt=u16(t,2);
+  const ap=files['ALLPALS.DAT'];
+  const objImgs=readGR(files['OBJECTS.GR'],ap), doorImgs=readGR(files['DOORS.GR'],ap);
+  // creature icons carry editor labels (letters) beside the figure: keep only the figure's pixels
+  for(let id=0x40;id<0x80;id++){ const im=objImgs[id]; if(im) keepLargestBlob(im); }
+  const STR=readStrings(files['STRINGS.PAK']); const names=STR.get(4)||[];
+  const tmImgs=files['TMFLAT.GR']?readGR(files['TMFLAT.GR'],ap):[];
+  const tmoImgs=files['TMOBJ.GR']?readGR(files['TMOBJ.GR'],ap):[];
+  const LAYERS=nt+objImgs.length+doorImgs.length+tmImgs.length+tmoImgs.length+1; // +1: flat-colour layer for models
+  const tex=new Uint8Array(LAYERS*4096);
+  for(let i=0;i<nt;i++){ const o=u32(t,4+i*4); tex.set(t.subarray(o,o+4096),i*4096); }
+  const put=(im,layer)=>{ if(!im) return; for(let y=0;y<Math.min(64,im.h);y++) for(let x=0;x<Math.min(64,im.w);x++) tex[layer*4096+y*64+x]=im.px[y*im.w+x]; };
+  objImgs.forEach((im,i)=>put(im,nt+i)); doorImgs.forEach((im,i)=>put(im,nt+objImgs.length+i)); tmImgs.forEach((im,i)=>put(im,nt+objImgs.length+doorImgs.length+i));
+  const tmoBase=nt+objImgs.length+doorImgs.length+tmImgs.length; tmoImgs.forEach((im,i)=>put(im,tmoBase+i));
+  const palLayer=LAYERS-1; for(let i=0;i<256;i++) tex[palLayer*4096+i]=i; // colour c sits at texel (c%64, c>>6)
+  let models=null; if(files['UW2.EXE']) try{ models=readModels(files['UW2.EXE']); }catch(e){ console.warn('models',e); }
+  const pal=new Uint8Array(1024); const P=files['PALS.DAT'];
+  for(let i=0;i<256;i++){ for(let c=0;c<3;c++) pal[i*4+c]=Math.min(255,P[i*3+c]*4+(P[i*3+c]>>4)); pal[i*4+3]=255; }
+  const crit= files['CRIT/AS.AN']&&files['CRIT/CR.AN'] ? {as:files['CRIT/AS.AN'], an:files['CRIT/CR.AN'], files, cache:new Map()} : null;
+  G={files,models,grids:{},tmoImgs,tmoBase,palLayer,tmImgs,tmBase:nt+objImgs.length+doorImgs.length,STR,crit,levels,nt,objBase:nt,doorBase:nt+objImgs.length,objImgs,doorImgs,names,tex,LAYERS,pal,light:files['LIGHT.DAT']};
+}
+function keepLargestBlob(im){
+  const {w,h,px}=im, lab=new Int32Array(w*h).fill(-1), sizes=[];
+  for(let i=0;i<w*h;i++){ if(!px[i]||lab[i]>=0) continue; const id=sizes.length; let n=0; const st=[i]; lab[i]=id;
+    while(st.length){ const p=st.pop(); n++; const x=p%w, y=(p/w)|0;
+      for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){ const X=x+dx,Y=y+dy; if(X<0||Y<0||X>=w||Y>=h) continue; const q=Y*w+X; if(px[q]&&lab[q]<0){lab[q]=id;st.push(q);} } }
+    sizes.push(n); }
+  if(sizes.length<2) return; const big=Math.max(...sizes);
+  for(let i=0;i<w*h;i++) if(px[i]&&sizes[lab[i]]<big*0.35) px[i]=0;
+}
+// ---------- creatures ----------
+function critterOf(id){ const c=G.crit; if(!c) return null; const k=id-0x40; const num=c.as[k*2], aux=c.as[k*2+1];
+  if(num===255||num===undefined) return null; const o=num.toString(8).padStart(2,'0'); if(!c.files[`CRIT/CR${o}.00`]) return null; return {num,aux,key:num*4+aux}; }
+function critFrames(num,aux){ const c=G.crit, key=num*4+aux; if(c.cache.has(key)) return c.cache.get(key);
+  const o=num.toString(8).padStart(2,'0'); const frames=[];
+  for(let p=0;p<10;p++){ const b=c.files[`CRIT/CR${o}.${String(p).padStart(2,'0')}`]; if(!b) break;
+    readCritPage(b,aux).forEach((f,i)=>{ if(f&&!frames[i]) frames[i]=f; }); }
+  const anims=[]; for(let a=0;a<64;a++){ const e=c.an.subarray(num*512+a*8,num*512+a*8+8); const n=e[7]===255?0:e[7]; anims.push(Array.from(e.subarray(0,Math.min(7,n))).filter(f=>f!==255&&frames[f])); }
+  const r={frames,anims}; c.cache.set(key,r); return r; }
+function buildCritters(){
+  LV.critters=[]; if(!G.crit) return;
+  const sets=new Map();
+  for(const o of LV.objs){ if(o.id<0x40||o.id>=0x80) continue; const ci=critterOf(o.id); if(!ci) continue;
+    if(!sets.has(ci.key)) sets.set(ci.key,critFrames(ci.num,ci.aux)); const X=o.tx+(o.fx+0.5)/8, Y=o.ty+(o.fy+0.5)/8;
+    LV.critters.push({o,set:sets.get(ci.key),phase:Math.random()*10,x:X,y:Y,hx:X,hy:Y,ang:o.hd*Math.PI/4,wait:1+Math.random()*4,tx:null,ty:null,walking:false}); }
+  // shelf-pack every frame of the creatures on this level into one atlas
+  const AW=1024; let x=0,y=0,rowH=0; const rects=new Map(); const items=[];
+  for(const [key,set] of sets) set.frames.forEach((f,i)=>{ if(!f) return; if(x+f.w+1>AW){ x=0; y+=rowH+1; rowH=0; } items.push([key,i,f,x,y]); x+=f.w+1; rowH=Math.max(rowH,f.h); });
+  const AH=Math.max(1,y+rowH+1); const atlas=new Uint8Array(AW*AH);
+  for(const [key,i,f,ax,ay] of items){ for(let r=0;r<f.h;r++) atlas.set(f.px.subarray(r*f.w,r*f.w+f.w),(ay+r)*AW+ax); rects.set(key*1000+i,[ax,ay]); }
+  LV.atlas={AW,AH,rects,keys:new Map([...sets].map(([k,v])=>[v,k]))};
+  gl.activeTexture(gl.TEXTURE3); if(!critTex) critTex=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,critTex);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT,1); gl.texImage2D(gl.TEXTURE_2D,0,gl.R8,AW,AH,0,gl.RED,gl.UNSIGNED_BYTE,atlas);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.activeTexture(gl.TEXTURE0);
+}
+let critTex=null, critBuf=null, critVao=null; const CPX=1/80;
+// creatures amble around their post: a stand-in until the game's AI is ported
+function critterFree(c,x,y){ const f=supportAt(x,y,c.h); if(f==null||Math.abs(f-c.h)>STEP) return false;
+  if(solidBlocks(x,y,CRAD,c.h,CBODY)) return false;
+  for(const k of [[0.18,0],[-0.18,0],[0,0.18],[0,-0.18]]) if(floorAt(x+k[0],-(y+k[1]))==null) return false;
+  if(Math.hypot(x-P.x,-y-P.z)<0.45) return false;
+  for(const [p,q] of LV.doorSegs){ const dx=q[0]-p[0], dy=q[1]-p[1]; let t=((x-p[0])*dx+(y-p[1])*dy)/(dx*dx+dy*dy); t=Math.max(0,Math.min(1,t)); if(Math.hypot(x-(p[0]+t*dx),y-(p[1]+t*dy))<0.2) return false; }
+  for(const d of LV.critters) if(d!==c&&Math.hypot(d.x-x,d.y-y)<0.4) return false;
+  return true; }
+function updateCritters(dt){
+  if(!LV.critters||!wander) return;
+  for(const c of LV.critters){
+    const n=c.o.npc; if(n&&n.goal===5&&n.gtarg===1){ chase(c,dt); continue; } // turned hostile (a refused demand, a script)
+    if(c.wait>0){ c.wait-=dt; c.walking=false; if(c.wait<=0){ const a=Math.random()*Math.PI*2, r=0.4+Math.random()*1.4; c.tx=c.hx+Math.sin(a)*r; c.ty=c.hy+Math.cos(a)*r; } continue; }
+    const dx=c.tx-c.x, dy=c.ty-c.y, d=Math.hypot(dx,dy); if(d<0.05){ c.wait=2+Math.random()*5; continue; }
+    const sp=Math.min(d,0.55*dt), nx=c.x+dx/d*sp, ny=c.y+dy/d*sp; c.ang=Math.atan2(dx,dy);
+    if(critterFree(c,nx,ny)){ c.x=nx; c.y=ny; c.h=supportAt(nx,ny,c.h); c.walking=true; } else { c.wait=1+Math.random()*3; c.walking=false; } }
+}
+let wander=true;
+function chase(c,dt){ const px=P.x, py=-P.z, dx=px-c.x, dy=py-c.y, d=Math.hypot(dx,dy); c.ang=Math.atan2(dx,dy);
+  if(d<0.8||d>12){ c.walking=false; if(d<0.8&&!c.warned){ c.warned=true; say(`${npcName(c.o.npc.who,c.o)} attacks you! (Combat is not built yet.)`); } return; }
+  const sp=Math.min(d,1.1*dt), nx=c.x+dx/d*sp, ny=c.y+dy/d*sp, f=supportAt(nx,ny,c.h);
+  if(f!=null&&Math.abs(f-c.h)<=STEP&&!solidBlocks(nx,ny,CRAD,c.h,CBODY)&&floorAt(nx,-ny)!=null){ c.x=nx; c.y=ny; c.h=f; c.walking=true; } else c.walking=false; }
+function drawCritters(VP,E,L,time){
+  if(!LV.critters.length) return; const a=[]; const {AW,AH,rects,keys}=LV.atlas;
+  for(const c of LV.critters){ const o=c.o; const X=c.x, Y=c.y; const wy=c.h??floorAt(X,-Y)??o.z/32;
+    const npcAng=c.ang, camAng=Math.atan2(P.x-X,(-P.z)-Y);
+    const rel=Math.round((camAng-npcAng)/(Math.PI/4)); const dir=((4-rel)%8+8)%8; // 4 = facing the viewer
+    let list=c.seq?c.set.anims[c.seq.g*8+dir]:c.walking?c.set.anims[8+dir]:c.set.anims[dir]; if(!list||!list.length) list=c.set.anims[dir]; if(!list||!list.length) list=c.set.anims[4]; if(!list||!list.length) continue;
+    const fi=c.seq&&list===c.set.anims[c.seq.g*8+dir]?list[c.seq.f%list.length]:list[Math.floor(time*5+c.phase)%list.length]; const f=c.set.frames[fi]; const r=rects.get(keys.get(c.set)*1000+fi); if(!f||!r) continue;
+    const x0=-f.hx*CPX, x1=(f.w-f.hx)*CPX, y0=-(f.h-f.hy)*CPX, y1=f.hy*CPX; const u0=r[0]/AW,u1=(r[0]+f.w)/AW,v0=r[1]/AH,v1=(r[1]+f.h)/AH;
+    for(const q of [[x0,y0,u0,v1],[x1,y0,u1,v1],[x1,y1,u1,v0],[x0,y0,u0,v1],[x1,y1,u1,v0],[x0,y1,u0,v0]]) a.push(X,wy,-Y,q[0],q[1],q[2],q[3],0);
+    c.pickC=[X,wy+y1*0.55,-Y]; if(c.sp) c.sp.c=c.pickC; }
+  if(!critVao){ critVao=gl.createVertexArray(); critBuf=gl.createBuffer(); gl.bindVertexArray(critVao); gl.bindBuffer(gl.ARRAY_BUFFER,critBuf);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,3,gl.FLOAT,false,32,0); gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1,2,gl.FLOAT,false,32,12); gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2,2,gl.FLOAT,false,32,20); gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3,1,gl.FLOAT,false,32,28); }
+  gl.bindVertexArray(critVao); gl.bindBuffer(gl.ARRAY_BUFFER,critBuf); gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(a),gl.DYNAMIC_DRAW);
+  const p=progC; gl.useProgram(p); gl.uniformMatrix4fv(p.U.uVP,false,VP); gl.uniform3fv(p.U.uEye,E); gl.uniform3f(p.U.uRight,Math.cos(P.yaw),0,Math.sin(P.yaw));
+  gl.uniform1i(p.U.uTex,3); gl.uniform1i(p.U.uPal,1); gl.uniform1i(p.U.uLight,2); gl.uniform2f(p.U.uLt,L[1],L[2]); gl.uniform1i(p.U.uAlpha,1);
+  gl.drawArrays(gl.TRIANGLES,0,a.length/8);
+}
+const nameOf=id=>{ let s=(G.names[id]||'something').split('&')[0]; return s.replace(/^(an?|the|some)_/,'$1 ').replace(/^_/,''); };
+
+// ---------- level model ----------
+let LV=null;
+function loadLevel(n){
+  const L=G.levels[n], TM=G.levels[80+n];
+  const texmap=[]; for(let i=0;i<64;i++) texmap.push(TM?u16(TM,i*2):0);
+  const doorTex=TM?Array.from(TM.subarray(128,134)):[0,1,2,3,4,5];
+  const tiles=new Array(4096);
+  for(let i=0;i<4096;i++){ const w0=u16(L,i*4), w1=u16(L,i*4+2);
+    const type=w0&15, h=(w0>>4)&15; const c=[h,h,h,h];
+    if(type===6){c[2]++;c[3]++;} else if(type===7){c[0]++;c[1]++;} else if(type===8){c[1]++;c[2]++;} else if(type===9){c[0]++;c[3]++;}
+    tiles[i]={type,h,c,floor:texmap[(w0>>10)&15],wall:texmap[w1&63],first:w1>>6}; }
+  const oaddr=i=>i<256?0x4000+i*27:0x5b00+(i-256)*8;
+  const rd=i=>{ const a=oaddr(i); const w0=u16(L,a),w1=u16(L,a+2),w2=u16(L,a+4),w3=u16(L,a+6);
+    const o={i,isq:(w0>>15)&1,id:w0&511,inv:(w0>>14)&1,fl:(w0>>9)&15,z:w1&127,hd:(w1>>7)&7,fy:(w1>>10)&7,fx:(w1>>13)&7,q:w2&63,next:w2>>6,own:w3&63,link:w3>>6};
+    o.lvl=n; if(i<256&&o.id>=0x40&&o.id<0x80) o.npc=readNpc(L,a); return o; };
+  const all=[], props=[], objs=[], doors=[], triggers=new Map(), seen=new Set();
+  for(let ty=0;ty<64;ty++) for(let tx=0;tx<64;tx++){
+    let i=tiles[ty*64+tx].first;
+    while(i&&!seen.has(i)&&i<1024){ seen.add(i); const o=rd(i); o.tx=tx; o.ty=ty; all.push(o);
+      if(o.id>=0x140&&o.id<0x150) doors.push(o);
+      else if(o.id===0x1a0&&o.link){ const t=rd(o.link); if(t.id===0x181) triggers.set(ty*64+tx,{x:t.q,y:t.own,lv:t.z?t.z-1:n}); }
+      else if(isProp(o.id)&&!o.inv) props.push(o);
+      else if(o.id<0x160&&!o.inv) objs.push(o);
+      i=o.next; }
+  }
+  for(const o of all) if(o.npc&&!o.inv){ o.inv=[]; const got=new Set(); let k=o.link; while(k&&k<1024&&!got.has(k)&&o.inv.length<40){ got.add(k); const it=rd(k); o.inv.push(it); k=it.next; } }
+  const st=LEVELSTATE[n]; // changes made earlier (doors, levers, things taken or dropped) replace the pristine lists
+  LV={n,tiles,texmap,doorTex,objs:st?st.objs:objs,doors:st?st.doors:doors,triggers,all,props:st?st.props:props};
+  LV.bridges=new Map(); for(const o of props) if(o.id===0x164) LV.bridges.set(o.ty*64+o.tx,o.z/32+0.03);
+  buildGeometry(); buildCritters(); buildSprites(); buildDoors();
+  // creatures stand on whatever is under them (a table, a bed) now that props are solid
+  for(const c of LV.critters){ const fl=floorAt(c.x,-c.y); c.h=supportAt(c.x,c.y,Math.max(fl??0,c.o.z/32))??c.o.z/32; }
+}
+const tileAt=(x,y)=>(x<0||y<0||x>63||y>63)?null:LV.tiles[y*64+x];
+
+function floorAt(wx,wz){
+  const X=wx, Y=-wz; const tx=Math.floor(X), ty=Math.floor(Y); const t=tileAt(tx,ty); if(!t||t.type===0) return null;
+  const fx=X-tx, fy=Y-ty;
+  if(t.type===2&&fx<fy) return null; if(t.type===5&&fx>fy) return null;
+  if(t.type===3&&fx+fy>1) return null; if(t.type===4&&fx+fy<1) return null;
+  const c=t.c; const s=c[0]*(1-fx)+c[1]*fx, nrt=c[3]*(1-fx)+c[2]*fx; const f=(s*(1-fy)+nrt*fy)*HU;
+  const b=LV.bridges&&LV.bridges.get(ty*64+tx); return b!=null&&b>f?b:f;
+}
+// ---------- solid props (collision) ----------
+// LV.solids: plan-view shapes in tile coords (x east, y north) with a bottom b and top t in world units.
+// Boxes are oriented like propBox (c,s of its yaw); cylinders carry r. Rebuilt with the props.
+function solidHit(s,X,Y,r){ const dx=X-s.x, dy=Y-s.y;
+  if(s.r!=null) return dx*dx+dy*dy<(s.r+r)*(s.r+r);
+  const lx=dx*s.c-dy*s.s, lz=-dx*s.s-dy*s.c; // inverse of propBox's rotation, with y=-z
+  const qx=Math.max(-s.hx,Math.min(s.hx,lx)), qz=Math.max(-s.hz,Math.min(s.hz,lz));
+  const ex=lx-qx, ez=lz-qz; return ex*ex+ez*ez<r*r; }
+// highest thing you can stand on at (X,Y) for a body whose feet are at `feet`: floor, or a prop top within a step
+function supportAt(X,Y,feet){ let f=floorAt(X,-Y); if(f==null) return null; const lim=feet+STEP+1e-4;
+  if(LV.solids) for(const s of LV.solids){ if(s.m) cellsOf(s,X,Y,0.06,(lo,hi)=>{ if(hi>f&&hi<=lim) f=hi; }); else if(s.t>f&&s.t<=lim&&solidHit(s,X,Y,0.06)) f=s.t; }
+  return f; }
+// real models collide through a height grid (1/16 tile cells, local model space): calls fn(bottom,top) for each cell under the disc
+function cellsOf(s,X,Y,r,fn){ const dx=X-s.x, dy=Y-s.y; if(dx*dx+dy*dy>(s.R+r)*(s.R+r)) return false;
+  const g=s.g, lx=dx*s.c-dy*s.s, ly=dx*s.s+dy*s.c, cs=g.cs; // inverse of the model->tile rotation in emitModel
+  const i0=Math.max(0,Math.floor((lx-r-g.x0)/cs)), i1=Math.min(g.nx-1,Math.floor((lx+r-g.x0)/cs));
+  const j0=Math.max(0,Math.floor((ly-r-g.y0)/cs)), j1=Math.min(g.ny-1,Math.floor((ly+r-g.y0)/cs));
+  for(let j=j0;j<=j1;j++) for(let i=i0;i<=i1;i++){ const k=j*g.nx+i; if(g.hi[k]<-1e8) continue;
+    const cx=Math.max(g.x0+i*cs,Math.min(g.x0+(i+1)*cs,lx)), cy=Math.max(g.y0+j*cs,Math.min(g.y0+(j+1)*cs,ly));
+    if((cx-lx)*(cx-lx)+(cy-ly)*(cy-ly)>=r*r) continue;
+    if(fn(s.b+g.lo[k],Math.min(CEILY,s.b+g.hi[k]))) return true; }
+  return false; }
+// a prop the body (radius r, height h) would walk into rather than step onto
+function solidBlocks(X,Y,r,feet,h){ if(LV.solids) for(const s of LV.solids){
+    if(s.m){ if(cellsOf(s,X,Y,r,(lo,hi)=>lo<feet+h&&hi>feet+STEP+1e-4)) return s; }
+    else if(s.b<feet+h&&s.t>feet+STEP+1e-4&&solidHit(s,X,Y,r)) return s; }
+  return null; }
+
+// ---------- geometry ----------
+let gl, progC, progW, progS, progM, geo={}, texA;
+function pushQuad(a,p0,p1,p2,p3,uv,layer){ // p0..p3 each [x,y,z], uv each [u,v]
+  const P=[p0,p1,p2,p0,p2,p3], U=[uv[0],uv[1],uv[2],uv[0],uv[2],uv[3]];
+  for(let k=0;k<6;k++) a.push(P[k][0],P[k][1],P[k][2],U[k][0],U[k][1],layer); }
+function pushTri(a,p,uv,layer){ for(let k=0;k<3;k++) a.push(p[k][0],p[k][1],p[k][2],uv[k][0],uv[k][1],layer); }
+const W=(x,y,h)=>[x,h*HU,-y];
+function wallQuad(a,x0,y0,x1,y1,b0,b1,t0,t1,layer){ // heights in units
+  const len=Math.hypot(x1-x0,y1-y0);
+  pushQuad(a,W(x0,y0,b0),W(x1,y1,b1),W(x1,y1,t1),W(x0,y0,t0),
+    [[0,CEILY-b0*HU],[len,CEILY-b1*HU],[len,CEILY-t1*HU],[0,CEILY-t0*HU]],layer); }
+function buildGeometry(){
+  const a=[];
+  for(let y=0;y<64;y++) for(let x=0;x<64;x++){ const t=tileAt(x,y); if(t.type===0) continue;
+    const cp=CORNER_POS.map(([dx,dy])=>[x+dx,y+dy]);
+    let tri=null; if(t.type===2) tri=[0,1,2]; else if(t.type===3) tri=[0,1,3]; else if(t.type===4) tri=[1,2,3]; else if(t.type===5) tri=[0,2,3];
+    const fl=i=>W(cp[i][0],cp[i][1],t.c[i]), ce=i=>W(cp[i][0],cp[i][1],CEIL), uvf=i=>[cp[i][0],-cp[i][1]];
+    if(tri){ pushTri(a,tri.map(fl),tri.map(uvf),t.floor); pushTri(a,tri.map(ce),tri.map(uvf),LV.texmap[32]);
+      const d= (t.type===2||t.type===5)?[0,2]:[3,1];
+      wallQuad(a,cp[d[0]][0],cp[d[0]][1],cp[d[1]][0],cp[d[1]][1],t.h,t.h,CEIL,CEIL,t.wall);
+    } else { pushQuad(a,fl(0),fl(1),fl(2),fl(3),[0,1,2,3].map(uvf),t.floor); pushQuad(a,ce(0),ce(1),ce(2),ce(3),[0,1,2,3].map(uvf),LV.texmap[32]); }
+    for(let s=0;s<4;s++){ if(!sideOpen(t.type,s)) continue;
+      const [ca,cb]=SIDE_CORNERS[s]; const a0=t.c[ca], a1=t.c[cb];
+      const nb=tileAt(x+DIRS[s][0],y+DIRS[s][1]); let t0=CEIL,t1=CEIL;
+      if(nb&&sideOpen(nb.type,(s+2)&3)){ const [na,nbb]=OPP_CORNER[s]; t0=Math.max(a0,nb.c[na]); t1=Math.max(a1,nb.c[nbb]); if(t0<=a0&&t1<=a1) continue; }
+      wallQuad(a,cp[ca][0],cp[ca][1],cp[cb][0],cp[cb][1],a0,a1,t0,t1,t.wall);
+    }
+  }
+  upload('world',a);
+}
+function buildSprites(){
+  const a=[]; LV.sprites=[];
+  const animated=new Set(LV.critters.map(c=>c.o));
+  for(const c of LV.critters){ const o=c.o; const X=o.tx+(o.fx+0.5)/8, Y=o.ty+(o.fy+0.5)/8; const fh=floorAt(X,-Y)??o.z/32; const e={o,c:[X,fh+0.4,-Y],r:0.35,npc:true,crit:c}; c.sp=e; LV.sprites.push(e); }
+  for(const o of LV.objs){ const im=G.objImgs[o.id]; if(!im||animated.has(o)) continue;
+    const npc=o.id>=0x40&&o.id<0x80, sc=npc?3:1;
+    const w=im.w/64*sc, h=im.h/64*sc; const X=o.tx+(o.fx+0.5)/8, Y=o.ty+(o.fy+0.5)/8;
+    const fh=floorAt(X,-Y); let wy=o.z/32; if(fh!=null&&wy<fh) wy=fh;
+    const c=[X,wy,-Y], layer=G.objBase+o.id, u=(im.w-0.02)/64, v=(im.h-0.02)/64;
+    const V=[[-w/2,0,0,v],[w/2,0,u,v],[w/2,h,u,0],[-w/2,0,0,v],[w/2,h,u,0],[-w/2,h,0,0]];
+    for(const q of V) a.push(c[0],c[1],c[2],q[0],q[1],q[2],q[3],layer);
+    LV.sprites.push({o,c:[X,wy+h/2,-Y],r:Math.max(w,h)/2+0.05,npc});
+  }
+  upload('sprites',a,8);
+}
+function doorFrame(d){
+  const t=tileAt(d.tx,d.ty); const alongX=(d.hd&3)===0; // heading N/S -> plane runs east-west
+  const fh=t?t.h:12; let pos;
+  if(alongX){ pos= d.fy===0?0:d.fy===7?1:(d.fy+0.5)/8; } else { pos= d.fx===0?0:d.fx===7?1:(d.fx+0.5)/8; }
+  return {alongX,fh,pos,wall:t?t.wall:0,open:(d.id&8)!==0,secret:(d.id&7)===7};
+}
+// ---------- 3D furniture and wall decals ----------
+// UW2's furniture models live in the executable, so these are hand-built stand-ins with the game's own textures.
+const STANDIN_IDS=new Set([0x150,0x158,0x15b,0x15c,0x15e,0x160,0x164,0x167,0x169,0x16e,0x16f,...Array.from({length:16},(_,i)=>0x170+i)]);
+// object id -> UW2.EXE model number (mapping from Underworld Adventures' uw2 model3d.cfg)
+const MODEL_OF={0x150:3,0x153:7,0x154:7,0x155:6,0x156:5,0x157:0xb,0x158:0x18,0x159:9,0x15a:0x17,0x15b:0x1b,0x15c:0x1c,0x15d:0x19,0x15e:0x1a,0x15f:4,0x160:0xa,0x163:0xd,0x165:0x13,0x167:0x1d,0x168:0x1e,0x169:0x1f};
+const NONSOLID=new Set([0x09,0x0d,0x17]); // beam, painting, moongate
+const isProp=id=>STANDIN_IDS.has(id)||(G.models&&MODEL_OF[id]!=null)||(G.tmoImgs.length>0&&(id===0x161||id===0x162||id===0x166));
+// textured model faces take a TMOBJ.GR image chosen by the object's flags. Paintings/gravestones are clear from the images;
+// table/chair/shelf choices are a best reading of the image set, not verified.
+function modelTex(o,n){ if(!G.tmoImgs.length) return -1; const b=G.tmoBase, f=o.fl;
+  if(n===0x0d) return b+42+Math.min(5,f); if(n===0x13) return b+28+(f&1);
+  if(n===0x18) return b+30+(f&3); if(n===0x1c) return b+38+(f&3); if(n===0x1f) return b+36; return -1; }
+function modelGrid(n){ if(G.grids[n]) return G.grids[n]; const M=G.models[n], cs=1/16; let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  for(const t of M.tris) for(const v of t.p){ x0=Math.min(x0,v[0]); x1=Math.max(x1,v[0]); y0=Math.min(y0,v[1]); y1=Math.max(y1,v[1]); }
+  const nx=Math.max(1,Math.ceil((x1-x0)/cs)), ny=Math.max(1,Math.ceil((y1-y0)/cs)); const lo=new Float32Array(nx*ny).fill(1e9), hi=new Float32Array(nx*ny).fill(-1e9);
+  for(const t of M.tris){ const [a,b,c]=t.p; const z=v=>v[3]?9:v[2];
+    const ln=Math.max(Math.hypot(b[0]-a[0],b[1]-a[1]),Math.hypot(c[0]-a[0],c[1]-a[1]),Math.hypot(c[0]-b[0],c[1]-b[1]),Math.abs(z(a)-z(b))*0.05);
+    const N=Math.min(48,Math.ceil(ln/(cs*0.5))+1);
+    for(let i=0;i<=N;i++) for(let j=0;j<=N-i;j++){ const u=i/N, w=j/N, r=1-u-w; const x=a[0]*r+b[0]*u+c[0]*w, y=a[1]*r+b[1]*u+c[1]*w, h=z(a)*r+z(b)*u+z(c)*w;
+      const k=Math.min(ny-1,Math.floor((y-y0)/cs))*nx+Math.min(nx-1,Math.floor((x-x0)/cs)); if(h<lo[k]) lo[k]=h; if(h>hi[k]) hi[k]=h; } }
+  return G.grids[n]={x0,y0,nx,ny,cs,lo,hi,R:Math.max(...[[x0,y0],[x1,y0],[x0,y1],[x1,y1]].map(q=>Math.hypot(...q)))}; }
+const SHL=[0.42,0.82,0.38], SHN=Math.hypot(...SHL);
+// place model n for object o: heading h turns it clockwise by h*45deg (heading 0 = model +x faces east; checked against
+// 31 chair/table pairs, chairs face their tables). Faces are flat palette colours, shaded per face by a fixed light.
+function emitModel(o,n,X,Y,f){
+  const M=G.models[n], th=o.hd*Math.PI/4, c=Math.cos(th), s=Math.sin(th); let base=o.z/32; if(f!=null&&base<f) base=f;
+  let tl=modelTex(o,n), im=tl>=0?G.tmoImgs[tl-G.tmoBase]:null;
+  const W3=v=>{ const x=X+v[0]*c+v[1]*s, y=Y-v[0]*s+v[1]*c; return [x, v[3]?CEILY:base+v[2], -y]; };
+  let zl=1e9,zh=-1e9;
+  for(const t of M.tris){ const p=t.p.map(W3);
+    const e1=[p[1][0]-p[0][0],p[1][1]-p[0][1],p[1][2]-p[0][2]], e2=[p[2][0]-p[0][0],p[2][1]-p[0][1],p[2][2]-p[0][2]];
+    const nn=[e1[1]*e2[2]-e1[2]*e2[1],e1[2]*e2[0]-e1[0]*e2[2],e1[0]*e2[1]-e1[1]*e2[0]], nl=Math.hypot(...nn)||1;
+    const sh=(1-Math.abs(nn[0]*SHL[0]+nn[1]*SHL[1]+nn[2]*SHL[2])/(nl*SHN))*1.3;
+    let tx=t.tex>=0&&im&&t.uv, uvs=t.uv;
+    if(n===0x0a&&G.tmoImgs[o.fl&3]){ // pillars: untextured in the model, wrapped here with TMOBJ.GR 0-3 (8x32) by flags
+      const pim=G.tmoImgs[o.fl&3], alongX=Math.abs(nn[0]*c-nn[2]*s)<Math.abs(nn[0]*s+nn[2]*c); tx=true; tl=G.tmoBase+(o.fl&3); im=pim;
+      uvs=t.p.map((v,k)=>[((alongX?v[0]:v[1])+0.0625)/0.125,1-(p[k][1]-base)/Math.max(0.5,CEILY-base)]); }
+    for(let k=0;k<3;k++){ zl=Math.min(zl,p[k][1]); zh=Math.max(zh,p[k][1]);
+      if(tx) LV.mv.push(p[k][0],p[k][1],p[k][2],Math.max(0,Math.min(1,uvs[k][0]))*(im.w-0.02)/64,Math.max(0,Math.min(1,uvs[k][1]))*(im.h-0.02)/64,tl,sh);
+      else LV.mv.push(p[k][0],p[k][1],p[k][2],((t.pal&63)+0.5)/64,((t.pal>>6)+0.5)/64,G.palLayer,sh); } }
+  const g=modelGrid(n), mx=g.x0+g.nx*g.cs/2, my=g.y0+g.ny*g.cs/2;
+  LV.sprites.push({o,c:[X+mx*c+my*s,(zl+Math.min(zh,zl+1.2))/2,-(Y-mx*s+my*c)],r:Math.max(0.15,Math.min(0.6,Math.max(g.nx,g.ny)*g.cs*0.45)),prop:true});
+  if(!NONSOLID.has(n)) LV.solids.push({m:true,o,x:X,y:Y,c,s,g,R:g.R,b:base});
+}
+const TX={wood:0x22, dark:0x20, red:0x5a, cloth:0xd3, stone:0xde};
+function propBox(a,cx,cy,cz,sx,sy,sz,ang,layer){ // centre (world), size (tile units), yaw about Y; cy is the bottom
+  const c=Math.cos(ang), s=Math.sin(ang);
+  const P=(x,y,z)=>[cx+x*c-z*s, cy+y, cz+x*s+z*c];
+  const x0=-sx/2,x1=sx/2,z0=-sz/2,z1=sz/2,y0=0,y1=sy;
+  const faces=[[[x0,y1,z0],[x1,y1,z0],[x1,y1,z1],[x0,y1,z1],sx,sz],[[x0,y0,z0],[x1,y0,z0],[x1,y0,z1],[x0,y0,z1],sx,sz],
+    [[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1],sx,sy],[[x1,y0,z0],[x0,y0,z0],[x0,y1,z0],[x1,y1,z0],sx,sy],
+    [[x1,y0,z1],[x1,y0,z0],[x1,y1,z0],[x1,y1,z1],sz,sy],[[x0,y0,z0],[x0,y0,z1],[x0,y1,z1],[x0,y1,z0],sz,sy]];
+  for(const [p0,p1,p2,p3,u,v] of faces) pushQuad(a,P(...p0),P(...p1),P(...p2),P(...p3),[[0,v],[u,v],[u,0],[0,0]],layer);
+}
+function propCyl(a,cx,cy,cz,r,h,sides,layer){ for(let i=0;i<sides;i++){ const a0=i/sides*Math.PI*2,a1=(i+1)/sides*Math.PI*2; const u0=i/sides*2*Math.PI*r,u1=(i+1)/sides*2*Math.PI*r;
+  const p=(an,y)=>[cx+Math.cos(an)*r,cy+y,cz+Math.sin(an)*r]; pushQuad(a,p(a0,0),p(a1,0),p(a1,h),p(a0,h),[[u0,h],[u1,h],[u1,0],[u0,0]],layer); } }
+function buildProps(a){
+  LV.sprites=LV.sprites.filter(e=>!e.prop); LV.solids=[]; LV.mv=[];
+  for(const o of LV.props){ const t=tileAt(o.tx,o.ty); if(!t) continue;
+    const X=o.tx+(o.fx+0.5)/8, Y=o.ty+(o.fy+0.5)/8; const f=floorAt(X,-Y); const base=o.id===0x164?o.z/32:(f??o.z/32);
+    const ang=-o.hd*Math.PI/4, cx=X, cz=-Y, id=o.id;
+    const pick=(y,r)=>LV.sprites.push({o,c:[cx,base+y,cz],r,prop:true});
+    const box=(sx,sz,b,t)=>LV.solids.push({o,x:X,y:Y,hx:sx/2,hz:sz/2,c:Math.cos(ang),s:Math.sin(ang),b,t});
+    const cyl=(r,b,t)=>LV.solids.push({o,x:X,y:Y,r,b,t});
+    const mn=G.models?MODEL_OF[id]:undefined; if(mn!==undefined&&G.models[mn]&&G.models[mn].tris.length){ emitModel(o,mn,X,Y,f); continue; }
+    if(!STANDIN_IDS.has(id)&&id!==0x161&&id!==0x162&&id!==0x166) continue;
+    if(id===0x158){ // table
+      propBox(a,cx,base+0.3,cz,0.62,0.05,0.62,ang,TX.wood); for(const [lx,lz] of [[-.26,-.26],[.26,-.26],[.26,.26],[-.26,.26]]){ const c=Math.cos(ang),s=Math.sin(ang); propBox(a,cx+lx*c-lz*s,base,cz+lx*s+lz*c,0.05,0.3,0.05,ang,TX.dark); } pick(0.3,0.35); box(0.62,0.62,base,base+0.35); }
+    else if(id===0x150){ propBox(a,cx,base+0.18,cz,0.7,0.05,0.22,ang,TX.wood); for(const lx of [-.3,.3]){ const c=Math.cos(ang),s=Math.sin(ang); propBox(a,cx+lx*c,base,cz+lx*s,0.05,0.18,0.2,ang,TX.dark);} pick(0.18,0.35); box(0.7,0.22,base,base+0.23); }
+    else if(id===0x15c){ propBox(a,cx,base+0.18,cz,0.24,0.04,0.24,ang,TX.wood); const c=Math.cos(ang),s=Math.sin(ang);
+      for(const [lx,lz] of [[-.1,-.1],[.1,-.1],[.1,.1],[-.1,.1]]) propBox(a,cx+lx*c-lz*s,base,cz+lx*s+lz*c,0.035,0.18,0.035,ang,TX.dark);
+      propBox(a,cx+0.11*s,base+0.22,cz-0.11*c,0.24,0.26,0.035,ang,TX.wood); pick(0.2,0.2); box(0.26,0.26,base,base+0.48); }
+    else if(id===0x15e){ propBox(a,cx,base,cz,0.3,0.3,0.3,ang,TX.wood); pick(0.15,0.2); box(0.3,0.3,base,base+0.3); }
+    else if(id===0x15b){ propCyl(a,cx,base,cz,0.15,0.38,10,TX.wood); pick(0.19,0.2); cyl(0.15,base,base+0.38); }
+    else if(id===0x167){ propBox(a,cx,base,cz,0.55,0.16,0.95,ang,TX.dark); propBox(a,cx,base+0.16,cz,0.5,0.06,0.88,ang,TX.red); pick(0.15,0.45); box(0.55,0.95,base,base+0.22); }
+    else if(id===0x169){ const c=Math.cos(ang),s=Math.sin(ang); const nx=Math.sin(o.hd*Math.PI/4), ny=Math.cos(o.hd*Math.PI/4);
+      propBox(a,cx,o.z/32,cz,0.9,0.04,0.25,ang,TX.wood); pick(o.z/32-base,0.3); box(0.9,0.25,o.z/32,o.z/32+0.04); }
+    else if(id===0x160){ propCyl(a,cx,base,cz,0.1,CEILY-base,8,t.wall); pick(0.5,0.15); cyl(0.1,base,CEILY); }
+    else if(id===0x164){ const bl=o.fl<2?(G.tmoImgs.length?G.tmoBase+30+o.fl:TX.wood):LV.texmap[o.fl-2+48]; propBox(a,o.tx+0.5,base-0.06,-(o.ty+0.5),1,0.09,1,0,bl); }
+    else { // flat things fixed to a wall: texture-map objects, buttons, switches, levers, pull chains
+      const an=o.hd*Math.PI/4, nx=Math.sin(an), ny=Math.cos(an), tx=Math.cos(an), ty=-Math.sin(an);
+      const full=id===0x16e||id===0x16f; let layer, w, h, bottom, ex, ey;
+      if(full){ layer=LV.texmap[o.own]; w=1; h=1; bottom=o.z/32; ex=o.tx+0.5+nx*0.495; ey=o.ty+0.5+ny*0.495; }
+      else { const tm=id===0x161?4+(o.fl&7):id===0x162?12+(o.fl&7):id===0x166?20+(o.fl&7):-1; // levers, switches, writing: TMOBJ.GR
+        if(tm>=0){ if(!G.tmoImgs.length) continue; layer=G.tmoBase+tm; } else { if(!G.tmImgs.length) continue; layer=G.tmBase+Math.min(G.tmImgs.length-1,id-0x170); } w=h=0.25; bottom=o.z/32-0.125;
+        const px=o.fx===0?0:o.fx===7?1:(o.fx+0.5)/8, py=o.fy===0?0:o.fy===7?1:(o.fy+0.5)/8; ex=o.tx+px-nx*0.005; ey=o.ty+py-ny*0.005;
+        if(Math.abs(nx)>0.5) ex=o.tx+(nx>0?1:0)-nx*0.005; if(Math.abs(ny)>0.5) ey=o.ty+(ny>0?1:0)-ny*0.005; }
+      const p0=[ex-tx*w/2,ey-ty*w/2], p1=[ex+tx*w/2,ey+ty*w/2]; const v=full?1:(15.98/64), u=full?1:(15.98/64);
+      pushQuad(a,[p0[0],bottom,-p0[1]],[p1[0],bottom,-p1[1]],[p1[0],bottom+h,-p1[1]],[p0[0],bottom+h,-p0[1]],[[0,v],[u,v],[u,0],[0,0]],layer);
+      if(!full) LV.sprites.push({o,c:[ex,bottom+h/2,-ey],r:0.18,decal:true,prop:true});
+    }
+  }
+}
+function buildDoors(){
+  const a=[]; LV.doorSegs=[];
+  for(const d of LV.doors){ const f=doorFrame(d); d.f=f;
+    const P=(u)=> f.alongX? [d.tx+u, d.ty+f.pos] : [d.tx+f.pos, d.ty+1-u];
+    const top=f.fh+4;
+    const piece=(u0,u1,b,tp,layer)=>{ const p0=P(u0),p1=P(u1); wallQuad(a,p0[0],p0[1],p1[0],p1[1],b,b,tp,tp,layer); };
+    piece(0,0.25,f.fh,CEIL,f.wall); piece(0.75,1,f.fh,CEIL,f.wall); if(top<CEIL) piece(0.25,0.75,top,CEIL,f.wall);
+    const dt=f.secret?f.wall:G.doorBase+Math.min(G.doorImgs.length-1,LV.doorTex[d.id&7]??(d.id&7));
+    const s0=P(0),s1=P(0.25),s2=P(0.75),s3=P(1); LV.doorSegs.push([s0,s1],[s2,s3]);
+    if(!f.open){ const p0=P(0.25),p1=P(0.75);
+      pushQuad(a,W(p0[0],p0[1],f.fh),W(p1[0],p1[1],f.fh),W(p1[0],p1[1],top),W(p0[0],p0[1],top),f.secret?[[0,1],[0.5,1],[0.5,0],[0,0]]:[[0,0.998],[0.498,0.998],[0.498,0],[0,0]],dt);
+      LV.doorSegs.push([s1,s2]); d.panel=[p0,p1,f.fh*HU,top*HU];
+    } else { // swung open against the hinge
+      const p0=P(0.25); const n= f.alongX?[0,0.5]:[0.5,0];
+      const p1=[p0[0]+n[0],p0[1]+n[1]];
+      pushQuad(a,W(p0[0],p0[1],f.fh),W(p1[0],p1[1],f.fh),W(p1[0],p1[1],top),W(p0[0],p0[1],top),[[0,0.998],[0.498,0.998],[0.498,0],[0,0]],dt);
+      d.panel=[p0,p1,f.fh*HU,top*HU];
+    }
+  }
+  buildProps(a);
+  upload('doors',a); upload('models',LV.mv,7);
+}
+
+// ---------- WebGL ----------
+const VS_W=`#version 300 es
+layout(location=0) in vec3 aP; layout(location=1) in vec2 aT; layout(location=2) in float aL;
+uniform mat4 uVP; uniform vec3 uEye; out vec3 vT; out float vD;
+void main(){ vT=vec3(aT,aL); vD=distance(aP,uEye); gl_Position=uVP*vec4(aP,1.); }`;
+const VS_S=`#version 300 es
+layout(location=0) in vec3 aC; layout(location=1) in vec2 aO; layout(location=2) in vec2 aT; layout(location=3) in float aL;
+uniform mat4 uVP; uniform vec3 uEye; uniform vec3 uRight; out vec3 vT; out float vD;
+void main(){ vec3 p=aC+uRight*aO.x+vec3(0.,aO.y,0.); vT=vec3(aT,aL); vD=distance(p,uEye); gl_Position=uVP*vec4(p,1.); }`;
+const FS=`#version 300 es
+precision highp float; precision highp sampler2DArray;
+uniform sampler2DArray uTex; uniform sampler2D uPal; uniform sampler2D uLight; uniform vec2 uLt; uniform int uAlpha;
+in vec3 vT; in float vD; out vec4 o;
+void main(){ int idx=int(texture(uTex,vT).r*255.+.5);
+  if(uAlpha==1&&(idx==0||vD<0.3)) discard;
+  int sh=clamp(int(vD*uLt.y+uLt.x),0,15);
+  int m=int(texelFetch(uLight,ivec2(idx,sh),0).r*255.+.5);
+  o=texelFetch(uPal,ivec2(m,0),0); }`;
+const VS_M=VS_W.replace('layout(location=2) in float aL;','layout(location=2) in float aL; layout(location=3) in float aS;').replace('vD=distance(aP,uEye);','vD=distance(aP,uEye)+aS;'); // per-face shade as extra light distance
+function prog(vs,fs){ const p=gl.createProgram(); for(const [t,s] of [[gl.VERTEX_SHADER,vs],[gl.FRAGMENT_SHADER,fs]]){ const sh=gl.createShader(t); gl.shaderSource(sh,s); gl.compileShader(sh); if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh)); gl.attachShader(p,sh); }
+  gl.linkProgram(p); if(!gl.getProgramParameter(p,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const U={}; for(const n of ['uVP','uEye','uRight','uTex','uPal','uLight','uLt','uAlpha']) U[n]=gl.getUniformLocation(p,n); p.U=U; return p; }
+function upload(key,arr,stride=6){
+  if(geo[key]){ gl.deleteVertexArray(geo[key].vao); gl.deleteBuffer(geo[key].buf); }
+  const vao=gl.createVertexArray(), buf=gl.createBuffer(); gl.bindVertexArray(vao); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(arr),gl.STATIC_DRAW);
+  if(stride===7){ for(const [l,n,o] of [[0,3,0],[1,2,12],[2,1,20],[3,1,24]]){ gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l,n,gl.FLOAT,false,28,o); } }
+  else if(stride===6){ gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,3,gl.FLOAT,false,24,0); gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1,2,gl.FLOAT,false,24,12); gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2,1,gl.FLOAT,false,24,20); }
+  else { gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,3,gl.FLOAT,false,32,0); gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1,2,gl.FLOAT,false,32,12); gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2,2,gl.FLOAT,false,32,20); gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3,1,gl.FLOAT,false,32,28); }
+  gl.bindVertexArray(null); geo[key]={vao,buf,n:arr.length/stride};
+}
+function initGL(){
+  const cv=$('#view'); gl=cv.getContext('webgl2',{antialias:false,preserveDrawingBuffer:true});
+  if(!gl) throw new Error('This browser has no WebGL 2, which the engine needs.');
+  progW=prog(VS_W,FS); progS=prog(VS_S,FS); progM=prog(VS_M,FS); progC=prog(VS_S,FS.replace('uniform sampler2DArray uTex','uniform sampler2D uTex').replace('texture(uTex,vT)','texture(uTex,vT.xy)'));
+  texA=gl.createTexture(); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D_ARRAY,texA);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
+  gl.texImage3D(gl.TEXTURE_2D_ARRAY,0,gl.R8,64,64,G.LAYERS,0,gl.RED,gl.UNSIGNED_BYTE,G.tex);
+  for(const [k,v] of [[gl.TEXTURE_MIN_FILTER,gl.NEAREST],[gl.TEXTURE_MAG_FILTER,gl.NEAREST],[gl.TEXTURE_WRAP_S,gl.REPEAT],[gl.TEXTURE_WRAP_T,gl.REPEAT]]) gl.texParameteri(gl.TEXTURE_2D_ARRAY,k,v);
+  const t2=(unit,w,h,fmt,ifmt,data)=>{ const t=gl.createTexture(); gl.activeTexture(gl.TEXTURE0+unit); gl.bindTexture(gl.TEXTURE_2D,t);
+    gl.texImage2D(gl.TEXTURE_2D,0,ifmt,w,h,0,fmt,gl.UNSIGNED_BYTE,data);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST); return t; };
+  t2(1,256,1,gl.RGBA,gl.RGBA8,G.pal); t2(2,256,16,gl.RED,gl.R8,G.light);
+  gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
+}
+
+// ---------- player & controls ----------
+const P={x:32,z:-32,y:0,vy:0,yaw:0,pitch:0,tile:-1};
+const LIGHTS=[['Candle',-1,4.2],['Torch',-2,2.9],['Lantern',-3,2.1],['Daylight',0,0.25]];
+let lightIdx=2, chunky=true, showMap=false, jumpReq=false;
+const keys=new Set(); let joy=null, lookT=null;
+
+function faceOpen(){ let by=0,bd=-1; for(let k=0;k<4;k++){ const a=k*Math.PI/2; let d=0; while(d<6&&floorAt(P.x+Math.sin(a)*d,P.z-Math.cos(a)*d)!=null) d+=0.1; if(d>bd){bd=d;by=a;} } P.yaw=by; }
+function placeStart(){
+  const note=LV.n===0&&LV.all.find(o=>o.id===0x136); if(note){ teleport(note.tx,note.ty); faceOpen(); return; }
+  let best=null,bs=-1; let cx=0,cy=0,cn=0;
+  for(let y=0;y<64;y++)for(let x=0;x<64;x++) if(tileAt(x,y).type===1){cx+=x;cy+=y;cn++;}
+  cx/=cn||1; cy/=cn||1;
+  for(let y=2;y<62;y++)for(let x=2;x<62;x++){ const t=tileAt(x,y); if(t.type!==1) continue; let s=0;
+    for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++){ const u=tileAt(x+dx,y+dy); if(u.type===1&&u.h===t.h) s++; }
+    s-= Math.hypot(x-cx,y-cy)*0.15; if(s>bs){bs=s;best=[x,y];} }
+  if(best){ teleport(best[0],best[1]); faceOpen(); }
+}
+function teleport(tx,ty){
+  const ok=(x,y)=>{ const t=tileAt(x,y); return t&&t.type!==0&&floorAt(x+0.5,-(y+0.5))!=null; };
+  if(!ok(tx,ty)) outer: for(let r=1;r<6;r++) for(let dy=-r;dy<=r;dy++) for(let dx=-r;dx<=r;dx++) if(ok(tx+dx,ty+dy)){ tx+=dx; ty+=dy; break outer; }
+  P.x=tx+0.5; P.z=-(ty+0.5); const f=floorAt(P.x,P.z); P.y=f??0; P.vy=0; P.tile=ty*64+tx; unstick(); }
+// landed inside furniture (e.g. the table under Miranda's summons): stand on it if low enough, else shuffle to the nearest clear spot
+function unstick(){ const X=P.x, Y=-P.z; P.y=supportAt(X,Y,P.y)??P.y; if(!blocked(P.x,P.z,P.y)) return;
+  for(let r=0.1;r<=0.9;r+=0.1) for(let k=0;k<16;k++){ const a=k*Math.PI/8, x=X+Math.cos(a)*r, y=Y+Math.sin(a)*r; const f=floorAt(x,-y); if(f==null) continue;
+    const ft=supportAt(x,y,f); if(!blocked(x,-y,ft)){ P.x=x; P.z=-y; P.y=ft; return; } } }
+function blocked(x,z,feet){
+  for(let k=0;k<9;k++){ const a=k*Math.PI/4, r=k===8?0:RAD; const f=floorAt(x+Math.cos(a)*r,z+Math.sin(a)*r);
+    if(f==null||f>feet+STEP||f>CEILY-0.7) return true; }
+  const X=x, Y=-z;
+  if(solidBlocks(X,Y,RAD,feet,BODY)) return true;
+  if(LV.critters) for(const c of LV.critters){ const h=c.h??feet; if(h<feet+BODY&&h+CBODY>feet+STEP&&Math.hypot(c.x-X,c.y-Y)<RAD+CRAD) return true; }
+  for(const [p,q] of LV.doorSegs){ const dx=q[0]-p[0], dy=q[1]-p[1]; const L2=dx*dx+dy*dy; let t=((X-p[0])*dx+(Y-p[1])*dy)/L2; t=Math.max(0,Math.min(1,t));
+    if(Math.hypot(X-(p[0]+t*dx),Y-(p[1]+t*dy))<RAD) return true; }
+  return false;
+}
+function update(dt){
+  if(CONV) return; GTIME+=dt; // the world holds still while you talk
+  let f=0,s=0,turn=0;
+  if(keys.has('KeyW')||keys.has('ArrowUp')) f+=1; if(keys.has('KeyS')||keys.has('ArrowDown')) f-=1;
+  if(keys.has('KeyD')) s+=1; if(keys.has('KeyA')) s-=1;
+  if(keys.has('ArrowLeft')||keys.has('KeyQ')) turn-=1; if(keys.has('ArrowRight')) turn+=1;
+  if(joy){ f-=joy.dy; s+=joy.dx; }
+  P.yaw+=turn*2.2*dt;
+  const sp=(keys.has('ShiftLeft')||keys.has('ShiftRight')?4.2:2.4)*dt;
+  const fx=Math.sin(P.yaw), fz=-Math.cos(P.yaw), rx=Math.cos(P.yaw), rz=Math.sin(P.yaw);
+  const mx=(fx*f+rx*s)*sp, mz=(fz*f+rz*s)*sp;
+  const steps=Math.ceil(Math.hypot(mx,mz)/0.08)||1;
+  // if something moved into us (a creature, a closing door), let any move through that stays on the floor
+  const stuck=blocked(P.x,P.z,P.y), ok=(x,z)=>{ if(!stuck) return !blocked(x,z,P.y); const f=floorAt(x,z); return f!=null&&f<=P.y+STEP; };
+  for(let i=0;i<steps;i++){ const sx=mx/steps, sz=mz/steps;
+    if(ok(P.x+sx,P.z+sz)){P.x+=sx;P.z+=sz;} else { if(ok(P.x+sx,P.z)) P.x+=sx; else if(ok(P.x,P.z+sz)) P.z+=sz; } }
+  const fl=supportAt(P.x,-P.z,P.y)??P.y, grounded=P.y<=fl+0.001&&P.vy<=0;
+  if(jumpReq){ jumpReq=false; if(grounded) P.vy=JUMPV; }
+  if(P.vy>0||P.y>fl+0.001){ P.vy-=9*dt; P.y+=P.vy*dt;
+    if(P.y+EYE+0.08>CEILY){ P.y=CEILY-EYE-0.08; P.vy=Math.min(0,P.vy); }
+    if(P.y<=fl){ P.y=fl; P.vy=0; } }
+  else if(P.y<fl){ P.y=Math.min(fl,P.y+Math.max(dt*4,(fl-P.y)*0.5)); P.vy=0; } else P.vy=0;
+  updateCritters(dt);
+  const tile=Math.floor(-P.z)*64+Math.floor(P.x); let fire=null;
+  if(tile!==P.tile){ P.tile=tile; fire=LV.triggers.get(tile); }
+  const ml=Math.hypot(mx,mz);
+  if(!fire&&ml>0){ // UW2 stairs and ladders: move triggers sit inside the wall tile you walk into
+    const px=P.x+mx/ml*(RAD+0.12), pz=P.z+mz/ml*(RAD+0.12); const ptx=Math.floor(px), pty=Math.floor(-pz);
+    const t=tileAt(ptx,pty); if(t&&t.type===0) fire=LV.triggers.get(pty*64+ptx); }
+  if(fire&&G.levels[fire.lv]){ const yaw=P.yaw, changed=fire.lv!==LV.n; if(changed) goLevel(fire.lv,false); teleport(fire.x,fire.y); P.yaw=yaw; if(changed) say(levelName(LV.n)); }
+}
+
+// ---------- render ----------
+function mat4Persp(fy,asp,n,f){ const t=1/Math.tan(fy/2); return [t/asp,0,0,0, 0,t,0,0, 0,0,(f+n)/(n-f),-1, 0,0,2*f*n/(n-f),0]; }
+function mul(a,b){ const o=new Array(16); for(let c=0;c<4;c++)for(let r=0;r<4;r++){ let s=0; for(let k=0;k<4;k++) s+=a[k*4+r]*b[c*4+k]; o[c*4+r]=s; } return o; }
+function viewMat(){ const cy=Math.cos(P.yaw),sy=Math.sin(P.yaw),cp=Math.cos(P.pitch),sp=Math.sin(P.pitch);
+  const F=[sy*cp,sp,-cy*cp], R=[cy,0,sy], U=[R[1]*F[2]-R[2]*F[1],R[2]*F[0]-R[0]*F[2],R[0]*F[1]-R[1]*F[0]];
+  const E=eye(); const d=(v)=>v[0]*E[0]+v[1]*E[1]+v[2]*E[2];
+  return [R[0],U[0],-F[0],0, R[1],U[1],-F[1],0, R[2],U[2],-F[2],0, -d(R),-d(U),d(F),1]; }
+const eye=()=>[P.x,P.y+EYE,P.z];
+let fovY=1;
+function render(){
+  const cv=$('#view'); const dpr=window.devicePixelRatio||1; const cw=cv.clientWidth, ch=cv.clientHeight;
+  const h= chunky? 200 : Math.round(ch*Math.min(dpr,2)); const w=Math.round(h*cw/ch);
+  if(cv.width!==w||cv.height!==h){ cv.width=w; cv.height=h; }
+  gl.viewport(0,0,w,h); gl.clearColor(0,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  const asp=w/h; fovY= asp>=1? 1.05 : Math.min(1.9,2*Math.atan(Math.tan(0.62)/asp));
+  const VP=mul(mat4Persp(fovY,asp,0.03,80),viewMat()); const E=eye(); const L=LIGHTS[lightIdx];
+  for(const [p,key,alpha] of [[progW,'world',0],[progW,'doors',1],[progM,'models',0],[progS,'sprites',1]]){ const g=geo[key]; if(!g||!g.n) continue;
+    gl.useProgram(p); gl.uniformMatrix4fv(p.U.uVP,false,VP); gl.uniform3fv(p.U.uEye,E); if(p.U.uRight) gl.uniform3f(p.U.uRight,Math.cos(P.yaw),0,Math.sin(P.yaw));
+    gl.uniform1i(p.U.uTex,0); gl.uniform1i(p.U.uPal,1); gl.uniform1i(p.U.uLight,2); gl.uniform2f(p.U.uLt,L[1],L[2]); gl.uniform1i(p.U.uAlpha,alpha);
+    gl.bindVertexArray(g.vao); gl.drawArrays(gl.TRIANGLES,0,g.n); }
+  drawCritters(VP,E,L,performance.now()/1000);
+  if(showMap) drawMap();
+}
+
+// ---------- picking ----------
+function pick(nx,ny){ // nx,ny in -1..1 screen coords
+  const cv=$('#view'); const asp=cv.width/cv.height; const t=Math.tan(fovY/2);
+  const cy=Math.cos(P.yaw),sy=Math.sin(P.yaw),cp=Math.cos(P.pitch),sp=Math.sin(P.pitch);
+  const F=[sy*cp,sp,-cy*cp], R=[cy,0,sy], U=[R[1]*F[2]-R[2]*F[1],R[2]*F[0]-R[0]*F[2],R[0]*F[1]-R[1]*F[0]];
+  let d=[0,1,2].map(i=>F[i]+R[i]*nx*t*asp+U[i]*ny*t); const dl=Math.hypot(...d); d=d.map(v=>v/dl);
+  const E=eye(); let wallT=4, surf=null, lastTile=null;
+  for(let s=0.02;s<4;s+=0.02){ const x=E[0]+d[0]*s,y=E[1]+d[1]*s,z=E[2]+d[2]*s; const f=floorAt(x,z);
+    if(f==null||y<f||y>CEILY){ wallT=s; const t=lastTile;
+      const here=tileAt(Math.floor(x),Math.floor(-z)); if(t) surf={kind:'surface', tex: f==null ? t.wall : y>CEILY ? LV.texmap[32] : (here||t).floor, x, z, tile:t};
+      break; }
+    lastTile=tileAt(Math.floor(x),Math.floor(-z)); }
+  let best=null,bt=wallT;
+  for(const sp of LV.sprites){ const v=[sp.c[0]-E[0],sp.c[1]-E[1],sp.c[2]-E[2]]; const tt=v[0]*d[0]+v[1]*d[1]+v[2]*d[2]; if(tt<0||tt>bt+0.2) continue;
+    const q=[v[0]-d[0]*tt,v[1]-d[1]*tt,v[2]-d[2]*tt]; if(Math.hypot(...q)<sp.r){ bt=tt; best={kind:'obj',sp}; } }
+  for(const dr of LV.doors){ if(!dr.panel) continue; const [p0,p1,b,tp]=dr.panel; // plane through p0,p1 (tile coords), vertical
+    const ax=p0[0],az=-p0[1],bx=p1[0],bz=-p1[1]; const nx2=-(bz-az), nz2=bx-ax; const den=d[0]*nx2+d[2]*nz2; if(Math.abs(den)<1e-6) continue;
+    const tt=((ax-E[0])*nx2+(az-E[2])*nz2)/den; if(tt<0||tt>bt+0.05) continue;
+    const hx=E[0]+d[0]*tt, hy=E[1]+d[1]*tt, hz=E[2]+d[2]*tt; const u=((hx-ax)*(bx-ax)+(hz-az)*(bz-az))/((bx-ax)**2+(bz-az)**2);
+    if(u>=-0.02&&u<=1.02&&hy>=b&&hy<=tp){ bt=tt; best={kind:'door',dr}; } }
+  return best||surf;
+}
+function use(nx,ny,look=false){ const h=pick(nx,ny); if(!h){ say(S1(168)||''); return; }
+  if(look&&h.kind==='door'){ say(`You see ${nameOf(h.dr.id&~8)}.`); return; }
+  if(h.kind==='door'){ const d=h.dr; if((d.id&7)===7&&!(d.id&8)){ d.id|=8; say('You found a secret door.'); } else { d.id^=8; say((d.id&8)?'The door opens.':'The door closes.'); }
+    buildDoors(); if(blocked(P.x,P.z,P.y)){ d.id^=8; buildDoors(); say('Something is in the way.'); } }
+  else if(h.kind==='surface'){
+    // writing and gravestones sit against walls as invisible objects
+    const X=h.x, Y=-h.z; let text=null;
+    for(const o of LV.all){ if(o.id!==0x166&&o.id!==0x165) continue; const ox=o.tx+(o.fx+0.5)/8, oy=o.ty+(o.fy+0.5)/8;
+      if((LV.tiles[o.ty*64+o.tx]===h.tile||Math.hypot(ox-X,oy-Y)<0.75)&&Math.hypot(ox-X,oy-Y)<1.3&&o.isq&&o.link>=0x200){ text=(G.STR.get(8)||[])[o.link-0x200]; if(text) break; } }
+    if(text){ text=text.trim(); if(text.length<70&&!text.includes('\n')) say(`“${text}”`); else showText(text); } else { const n=(G.STR.get(10)||[])[h.tex]; say(n?`You see ${n.replace(/^(an?|the|some)_/,'$1 ')}.`:''); }
+  }
+  else if(h.sp.decal&&(look||h.sp.o.id===0x166)){ const o=h.sp.o; if(!readWriting(o)) say(`You see ${nameOf(o.id)}.`); }
+  else if(h.sp.decal&&(h.sp.o.id===0x161||h.sp.o.id===0x162)){ const o=h.sp.o; o.fl=(o.fl+1)&7; buildDoors(); say(`You ${o.id===0x161?'pull':'flip'} the ${nameOf(o.id).replace(/^an? /,'')}.`); }
+  else if(h.sp.decal){ const o=h.sp.o; o.id^=8; buildDoors(); const n=nameOf(o.id&~8).replace(/^an? /,''); say(n.includes('button')?'You press the button.':`You ${n.includes('chain')?'pull':'flip'} the ${n}.`); }
+  else describe(h.sp.o);
+}
+const S1=i=>((G.STR.get(1)||[])[i]||'').trim();
+function readWriting(o){ if(!(o.isq&&o.link>=0x200)) return false; const t=(G.STR.get(8)||[])[o.link-0x200]; if(!t) return false;
+  const x=t.trim(); if(x.length<70&&!x.includes('\n')) say(`“${x}”`); else showText(x); return true; }
+function describe(o){
+  if(o.id>=0x130&&o.id<0x140&&o.isq&&o.link>=0x200){ const t=(G.STR.get(3)||[])[o.link-0x200]; if(t!=null){ showText(t.trim()||'The pages are blank.', nameOf(o.id)); return; } }
+  if((o.id===0x165||o.id===0x166)&&readWriting(o)) return;
+  say(`You see ${nameOf(o.id)}.`); }
+
+// ---------- inventory ----------
+// Mirrors the original: things you take go to the first free bag slot (or onto the cursor when the bag is full);
+// a held thing goes into whichever slot you tap, or back into the world where you point. No weight or equip rules yet.
+const INV={shl:null,shr:null,hl:null,hr:null,b0:null,b1:null,b2:null,b3:null,b4:null,b5:null,b6:null,b7:null,held:null};
+const BAG=['b0','b1','b2','b3','b4','b5','b6','b7'];
+const portable=o=>o.id<0x140&&!(o.id>=0x40&&o.id<0x80);
+function refreshObjs(){ buildSprites(); buildDoors(); }
+function tryGet(h){
+  if(INV.held){ say(S1(274)||'There is no place to put that.'); return; }
+  if(!h||h.kind!=='obj'){ say(S1(168)||'You see nothing.'); return; }
+  const o=h.sp.o; if(!portable(o)||h.sp.prop||h.sp.npc){ say(S1(109)||'You cannot pick that up.'); return; }
+  const E=eye(); if(Math.hypot(h.sp.c[0]-E[0],h.sp.c[1]-E[1],h.sp.c[2]-E[2])>2.3){ say(S1(107)||'You cannot reach that.'); return; }
+  LV.objs.splice(LV.objs.indexOf(o),1); refreshObjs();
+  const k=BAG.find(k=>!INV[k]); if(k){ INV[k]=o; say(`You put ${nameOf(o.id)} in your pack.`); } else { INV.held=o; say(`You hold ${nameOf(o.id)}.`); }
+  updateHeld(); drawPanel(); }
+function dropHeld(nx,ny){ const o=INV.held, h=pick(nx,ny); const PY=-P.z;
+  let X=P.x+Math.sin(P.yaw)*0.7, Y=PY+Math.cos(P.yaw)*0.7;
+  if(h&&h.kind==='surface'){ X=h.x; Y=-h.z; } else if(h&&h.kind==='obj'){ X=h.sp.c[0]; Y=-h.sp.c[2]; }
+  let dx=X-P.x, dy=Y-PY, d=Math.hypot(dx,dy); if(d>2.4){ say(S1(107)||'You cannot reach that.'); return; }
+  let f=null; for(let k=0;k<8&&d>0.25;k++){ f=supportAt(X,Y,9); if(f!=null&&!solidBlocks(X,Y,0.08,f,0.2)) break; f=null; X-=dx/d*0.07; Y-=dy/d*0.07; d=Math.hypot(X-P.x,Y-PY); }
+  if(f==null){ say(S1(269)||'There is no space to drop that.'); return; }
+  o.tx=Math.floor(X); o.ty=Math.floor(Y); o.fx=Math.max(0,Math.min(7,Math.floor((X-o.tx)*8))); o.fy=Math.max(0,Math.min(7,Math.floor((Y-o.ty)*8)));
+  o.z=Math.max(0,Math.min(127,Math.round(f*32))); LV.objs.push(o); INV.held=null; refreshObjs(); updateHeld(); drawPanel(); say(''); }
+let mode='use';
+function act(nx,ny){
+  if(INV.held){ dropHeld(nx,ny); return; }
+  if(mode==='get') return tryGet(pick(nx,ny));
+  if(mode==='look') return use(nx,ny,true);
+  if(mode==='talk') return talkTo(pick(nx,ny));
+  if(mode==='fight'){ say('Combat is not built yet.'); return; }
+  use(nx,ny,false); }
+function talkTo(h){ if(h&&h.kind==='obj'&&h.sp.npc) startTalk(h.sp); else say(((G.STR.get(7)||[])[0]||S1(170)||'You cannot talk to that.').trim()); }
+function showText(t,title=''){ document.exitPointerLock?.(); const el=$('#scroll'); el.querySelector('h2').textContent=title?title[0].toUpperCase()+title.slice(1):''; el.querySelector('.sheet>div').textContent=t.replace(/\\n/g,'\n'); el.hidden=false; say(''); }
+
+// ---------- conversations ----------
+// CNV.ARK programs run on ConvVM (part 1). Talking pauses the world. The VM yields at every menu, typed answer and pause; the
+// panel feeds the answer back. Per-slot private globals (31..G-1), quest flags, x_clock clocks, game variables (x_traps) and the
+// game clock live in CONVST / GTIME and go into saves. Builtins follow UnderworldGodot's port (hankmorgan) unless noted.
+// Object "indices" the programs pass around are this level's object numbers (o.i) where the object is from this level, else a
+// handle from 1024 up for this talk (things in your pack from other levels, things made during the talk).
+let CONV=null, GTIME=0; // GTIME: game minutes since the start (approximation: one game minute per real second)
+const newConvState=()=>({g:{},q:[],c:[],t:[]});
+let CONVST=newConvState();
+const TRADE_SLOTS=6; // UW2 (UW1 had 4)
+function convPrograms(){ if(G.conv===undefined){ const f=G.files['CNV.ARK']; G.conv=f?readArk(f).map(b=>b?readConv(b):null):null; } return G.conv; }
+const npcName=(who,o)=>{ const n=(G.STR.get(7)||[])[who+16]; return n&&n.trim()?n.trim():o?nameOf(o.id).replace(/^(an?|the|some) /,''):'Someone'; }; // block 7 names = whoami + 16
+// object data: COMOBJ.DAT (11 bytes per id after 2: value u16 at +4), OBJECTS.DAT critters (48 bytes per id&63 at 0x132)
+const objValue=id=>{ const b=G.files['COMOBJ.DAT']; return b&&2+id*11+6<=b.length?u16(b,2+id*11+4):0; };
+const crit=(id,k)=>{ const b=G.files['OBJECTS.DAT']; const a=0x132+(id&63)*48+k; return b&&a<b.length?b[a]:0; };
+const qtyOf=o=>o.isq&&o.link<0x200?Math.max(1,o.link):1;
+const itemName=o=>{ const n=nameOf(o.id); const q=qtyOf(o); return q>1?`${q} × ${n.replace(/^(an?|some) /,'')}`:n; };
+const skillNo=re=>{ for(let k=0;k<20;k++) if(re.test(S2(31+k))) return k; return -1; };
+const plSkill=re=>{ const k=skillNo(re); return k>=0&&PL?PL.skills[k]|0:0; };
+function mkObj(id,q=40,qty=0){ return {i:-1,isq:qty?1:0,id,inv:0,fl:0,z:0,hd:0,fy:3,fx:3,q,next:0,own:0,link:qty||0,tx:Math.floor(P.x),ty:Math.floor(-P.z),lvl:-1}; }
+function drawHead(cv,im){ const x=cv.getContext('2d'); x.clearRect(0,0,cv.width,cv.height); if(!im) return; const c=canv(im); x.imageSmoothingEnabled=false;
+  const s=Math.min(cv.width/im.w,cv.height/im.h); x.drawImage(c,(cv.width-im.w*s)/2,(cv.height-im.h*s)/2,im.w*s,im.h*s); }
+function setTalker(who){ if(!CONV) return; CONV.face=who; const o=CONV.o;
+  const head=who>0?UI.charhead?.[who-1]:null, gen=!head&&o?UI.genhead?.[o.id-0x40]:null;
+  drawHead($('#tPic'),head||gen); $('#tName').textContent=who===CONV.who?CONV.name:npcName(who); }
+function talkLine(kind,t){ if(!CONV) return; const log=$('#tLog');
+  if(CONV.echo!=null){ const e=CONV.echo; CONV.echo=null; if(!(kind==='you'&&String(t).trim().toLowerCase()===e.toLowerCase())) talkLine('you',e||'…'); } // typed words, unless the program repeats them itself
+  const text=String(t).replace(/\\n/g,'\n'); const parts=text.split(/\\m/).map(x=>x.trim()).filter(Boolean);
+  for(const part of parts){ const p=document.createElement('p'); p.className=kind;
+    if(kind==='npc'&&CONV.face!==CONV.who) CONV.switched=true;
+    if(kind==='npc'&&CONV.switched&&CONV.face!==CONV.lastSpk){ const b=document.createElement('span'); b.className='spk'; b.textContent=npcName(CONV.face); p.appendChild(b); }
+    p.appendChild(document.createTextNode(part)); log.appendChild(p); if(kind==='npc') CONV.lastSpk=CONV.face; }
+  log.scrollTop=log.scrollHeight; }
+
+// ----- NPC inventories and loot (npcloot.cs): spawned the first time anyone looks at what an NPC carries -----
+function npcInv(o){ if(!o.inv) o.inv=[]; if(o.npc&&!o.npc.loot&&G.files['OBJECTS.DAT']){ o.npc.loot=1; spawnLoot(o); } return o.inv; }
+const rr=n=>Math.floor(Math.random()*n);
+function lootQuality(){ const lv=LV.n+1; return (rr(2)===0?1+rr(63):rr(lv<<2)+(lv<<2))&63; }
+function spawnLoot(o){ const id=o.id, add=(iid,q=40,qty=0)=>o.inv.unshift(mkObj(iid,q,qty));
+  const mult=crit(id,0x26)&15, prob=(crit(id,0x26)>>4)&15, world=LV.n>>3;
+  if(rr(16)<prob){ let t=rr(Math.max(1,37-world*3))-(30-world*3); if(t<0||t===1) t=0; let bv=objValue(0xa0+t)||1;
+    if(bv>=12) bv=0xbc+(bv<<3); else if(bv>=8) bv=(0xec+bv)<<2; else if(bv>=4) bv=0xfc+(t<<1);
+    let qty=0; if(mult<bv){ if((mult<<2)<rr(bv)) qty=1; } else { const r=((mult<<2)/bv|0)<<1; let d=0; for(let k=0;k<4;k++) d+=r?1+rr(r):0; qty=d>>2; }
+    if(qty>0) add(0xa0+t,40,qty); }
+  const f=crit(id,0x27); if(rr(16)<(f&15)) add(0xb0+(f>>4),40);
+  for(let k=0;k<2;k++){ const b=crit(id,0x20+k); if(!(b&1)) continue; const v=(b>>1)&0x7f, wid=(((v>>4)&3)<<4)+(v&15); add(wid,lootQuality(),wid>=0x10&&wid<0x13?4+rr(8):0); }
+  for(let k=0;k<2;k++){ const b=G.files['OBJECTS.DAT'], a=0x132+(id&63)*48+0x22+k*2, w=b?u16(b,a):0; if(rr(16)<(w&15)){ const iid=(w>>4)&0xfff; if(iid&&iid<0x200) add(iid,lootQuality()); } }
+}
+// ----- handles -----
+function hOf(o){ if(!o) return 0; const C=CONV; if(o.lvl===LV.n&&o.i>0&&o.i<1024){ C.hmap.set(o.i,o); return o.i; }
+  let h=C.hrev.get(o); if(!h){ h=1024+C.hn++; C.hrev.set(o,h); C.hmap.set(h,o); } return h; }
+function oOf(h){ return h?CONV.hmap.get(h)||null:null; }
+function indexLevel(){ const m=new Map(); for(const o of LV.all) m.set(o.i,o); for(const list of [LV.objs,LV.doors,LV.props]) for(const o of list) if(o.lvl===LV.n) m.set(o.i,o);
+  for(const o of LV.objs) if(o.inv) for(const it of o.inv) if(it.lvl===LV.n&&it.i>0) m.set(it.i,it);
+  for(const k in INV){ const it=INV[k]; if(it&&it.lvl===LV.n&&it.i>0) m.set(it.i,it); } return m; }
+const invKeys=()=>Object.keys(INV).filter(k=>k!=='held'&&INV[k]);
+function takeFromNpc(o,it){ const inv=npcInv(o), i=inv.indexOf(it); if(i>=0) inv.splice(i,1); const t=CONV.tr; if(t){ const s=t.npc.indexOf(it); if(s>=0){ t.npc[s]=null; t.npcSel[s]=false; } } }
+function toPlayer(it){ const k=BAG.find(k=>!INV[k]); it.lvl=it.lvl??-1;
+  if(k){ INV[k]=it; talkLine('note',`(${itemName(it)} ${qtyOf(it)>1?'are':'is'} now in your pack.)`); return 1; }
+  it.tx=Math.floor(P.x); it.ty=Math.floor(-P.z); it.fx=it.fy=3; it.z=Math.max(0,Math.min(127,Math.round(P.y*32))); it.lvl=LV.n; LV.objs.push(it); CONV.dirty=true;
+  talkLine('note',`(Your pack is full: ${itemName(it)} ${qtyOf(it)>1?'are':'is'} at your feet.)`); return 2; }
+function fromPlayer(it){ for(const k in INV) if(INV[k]===it){ INV[k]=null; const t=CONV.tr; if(t){ const s=t.pl.indexOf(k); if(s>=0) t.pl[s]=null; } return true; } return false; }
+const giveNpc=(o,it)=>{ fromPlayer(it); npcInv(o).unshift(it); };
+
+// ----- trading (conversationtrade.cs): six slots a side; your offer is things still in your pack, marked for trade -----
+function tradeSel(side){ const t=CONV.tr; if(!t) return []; return side==='npc'? t.npc.filter((o,i)=>o&&t.npcSel[i]) : t.pl.map(k=>k&&INV[k]).filter(Boolean); }
+function itemValue(o,likes,acc){ let v=objValue(o.id), q=o.id===0xa0?63:o.q; const t=CONV.tr, m=CONV.vm.mem;
+  if(likes&&t){ const cat=o.id>>4, hit=a=>{ if(!a) return false; for(let p=a;p<a+64&&m[p]!==-1;p++){ const e=m[p]; if(e>=1000?cat===e-1000:e===o.id) return true; } return false; };
+    if(hit(t.dislikes)) return 0; if(hit(t.likes)) v=Math.floor(v*1.5); }
+  v=(v*q)>>6; v*=qtyOf(o); if(acc) v+=Math.floor(v*(-acc+rr(2*acc+1))/100); return v; } // quantity counted (the port counts one of a stack)
+const sideValue=(side,likes,acc)=>tradeSel(side).reduce((a,o)=>a+itemValue(o,likes,acc),0);
+function swapTrade(){ const t=CONV.tr; if(!t) return; const give=tradeSel('pl'), get=tradeSel('npc');
+  for(const it of get) takeFromNpc(CONV.o,it); for(const it of give) giveNpc(CONV.o,it); for(const it of get) toPlayer(it);
+  if(give.length||get.length) talkLine('note',`(${give.length?'You hand over '+give.map(itemName).join(', ')+'. ':''}${get.length?'You receive '+get.map(itemName).join(', ')+'.':''})`);
+  t.npcSel.fill(false); drawPanel(); renderTrade(); }
+function setupBarter(){ const C=CONV, o=C.o, inv=npcInv(o); const t=C.tr; t.npc.fill(null); t.npcSel.fill(false); t.on=true;
+  let slot=0, skipW=false, many=false;
+  for(const it of inv.slice(0,40)){ let skip=false; if(!skipW&&(it.id>>4)===0){ skipW=true; skip=true; } // keeps its own weapon
+    if(!objValue(it.id)) skip=true; if(many&&rr(7)<5) skip=true;
+    if(!skip){ t.npc[slot++]=it; if(slot>=TRADE_SLOTS){ many=true; slot=0; } } }
+  renderTrade(); }
+function renderTrade(){ const box=$('#tTrade'), t=CONV&&CONV.tr; if(!t||!t.on){ box.hidden=true; return; } box.hidden=false;
+  const cell=(o,sel,fn,label)=>{ const b=document.createElement('button'); b.className='tslot'+(sel?' sel':''); b.setAttribute('aria-pressed',!!sel);
+    if(o){ const im=G.objImgs[o.id]; if(im){ const c=document.createElement('img'); c.className='px'; c.alt=''; c.src=url(im); b.appendChild(c); } if(qtyOf(o)>1){ const q=document.createElement('i'); q.textContent=qtyOf(o); b.appendChild(q); }
+      b.title=itemName(o); b.setAttribute('aria-label',label+': '+itemName(o)); } else { b.disabled=true; b.setAttribute('aria-label',label+': empty'); }
+    b.onclick=fn; return b; };
+  const row=(id,items)=>{ const r=$(id); r.innerHTML=''; items.forEach(x=>r.appendChild(x)); };
+  row('#tTheirs',t.npc.map((o,i)=>cell(o,t.npcSel[i],()=>{ t.npcSel[i]=!t.npcSel[i]; renderTrade(); },'Theirs')));
+  row('#tOffer',t.pl.map((k,i)=>cell(k&&INV[k],!!(k&&INV[k]),()=>{ t.pl[i]=null; renderTrade(); },'Your offer')));
+  const offered=new Set(t.pl.filter(Boolean)), pack=invKeys().filter(k=>!offered.has(k));
+  row('#tPack',pack.map(k=>cell(INV[k],false,()=>{ const s=t.pl.findIndex(x=>!x); if(s>=0){ t.pl[s]=k; renderTrade(); } },'Your pack')));
+  $('#tPackL').hidden=!pack.length; }
+
+function startTalk(sp){
+  const o=sp.o; if(!convPrograms()){ say('Conversations need CNV.ARK: choose Forget data in Options, then your disc image again.'); return; }
+  if(!o.npc&&o.i<256) o.npc=readNpc(G.levels[LV.n],0x4000+o.i*27); // objects from saves made before NPC data was kept
+  const E=eye(); if(Math.hypot(sp.c[0]-E[0],sp.c[2]-E[2])>4){ say(S1(107)||'You cannot reach that.'); return; }
+  const who=o.npc?.who|0, cv=who?G.conv[who]:null, B7=G.STR.get(7)||[];
+  if(!cv||who===255){ say((B7[1]||'You get no response.').trim()); return; }
+  const n=o.npc, name=npcName(who,o), strings=G.STR.get(cv.strBlock)||[];
+  const vm=new ConvVM(cv,strings,{female:()=>!!PL?.sex,gstr:(b,i)=>(G.STR.get(b)||[])[i],fn:convFn,print:t=>talkLine('narr',t),
+    say:t=>{ const y=/^\s*\\1([\s\S]*?)\\0\s*$/.exec(t); if(y) talkLine('you',y[1]); else talkLine('npc',t.replace(/\\[01]/g,'')); }});
+  vm.quests=CONVST.q; vm.clocks=CONVST.c; const m=vm.mem, pl=PL||discPlayer();
+  // imported variables 0-30 (the talker's live values and the Avatar's)
+  const imp=[0,pl.vit[0],0,0,pl.vit[0],pl.mana[0],pl.level||1,0,vm.newStr(pl.name||'Avatar'),0,0,pl.sex|0,
+    n.xhome,n.yhome,who,n.hunger,n.hp,n.hp,0,0,n.goal,n.att,n.gtarg,n.talked,n.level,vm.newStr(name),LV.n+1,0,GTIME&0x7fff,Math.floor(GTIME/1440),Math.floor(GTIME)%1440];
+  imp.forEach((v,i)=>m[i]=v|0);
+  const saved=CONVST.g[who]; if(saved) saved.forEach((v,i)=>{ if(31+i<cv.G) m[31+i]=v; });
+  document.exitPointerLock?.(); keys.clear(); joy=null; hideStick();
+  const c=sp.crit||LV.critters.find(k=>k.o===o); if(c){ c.ang=Math.atan2(P.x-c.x,(-P.z)-c.y); c.walking=false; }
+  const rnd=(b,lo,hi)=>b+Math.floor(b*(lo+rr(hi-lo))/100);
+  CONV={vm,o,c,who,name,face:who,fx:[],over:false,hmap:indexLevel(),hrev:new Map(),hn:0,dirty:false,
+    tr:{on:false,npc:Array(TRADE_SLOTS).fill(null),npcSel:Array(TRADE_SLOTS).fill(false),pl:Array(TRADE_SLOTS).fill(null),
+      thr:rnd(crit(o.id,0xe)&15,-25,25),pat:rnd(crit(o.id,0xe)>>4,-20,100),acc:rnd((16-(crit(o.id,0xd)>>4))*6,-25,50),prev:0,likes:0,dislikes:0,bonus:0}};
+  for(const x of LV.objs) if(x.lvl===LV.n&&x.i>0) CONV.hmap.set(x.i,x);
+  $('#tLog').innerHTML=''; $('#tOpts').innerHTML=''; $('#tAskF').hidden=true; setTalker(who); renderTrade();
+  drawHead($('#tMe'),UI.heads?.[pl.body|0]); $('#tMeName').textContent=pl.name||'Avatar';
+  const hs=innerWidth<560?1.25:innerHeight<700?1.5:2; document.documentElement.style.setProperty('--hs',hs);
+  $('#talk').hidden=false; say(''); talkStep(vm.run());
+}
+function talkStep(st){ if(!CONV) return; const vm=CONV.vm, box=$('#tOpts'); box.innerHTML=''; $('#tAskF').hidden=true;
+  if(st==='menu'){ vm.menu.forEach((op,k)=>{ const b=document.createElement('button'); b.innerHTML=`<b>${k+1}.</b><span></span>`; b.lastChild.textContent=op.text;
+      b.onclick=()=>talkChoose(k); box.appendChild(b); }); box.firstChild?.focus({preventScroll:true}); return; }
+  if(st==='more'){ const b=document.createElement('button'); b.innerHTML='<b>…</b><span>More</span>'; b.onclick=()=>{ if(CONV&&!CONV.over) talkStep(CONV.vm.answer(0)); }; box.appendChild(b); b.focus({preventScroll:true}); return; }
+  if(st==='ask'){ const f=$('#tAskF'), i=$('#tAsk'); f.hidden=false; i.value=''; setTimeout(()=>i.focus(),30); return; }
+  // done or error: commit what the program changed, then offer the way out
+  if(st==='error'){ console.warn('conversation',CONV.who,vm.err); talkLine('note',`(The conversation breaks off here: the engine could not follow it. ${vm.err})`); }
+  endTalk(); const b=document.createElement('button'); b.innerHTML='<b>—</b><span>Leave</span>'; b.onclick=closeTalk; box.appendChild(b); b.focus({preventScroll:true}); }
+function talkKey(e){ if(e.target.id==='tAsk') return; const d=/^(Digit|Numpad)([1-9])$/.exec(e.code), st=CONV.vm.state;
+  if(d&&st==='menu'&&!CONV.over){ e.preventDefault(); talkChoose(+d[2]-1); }
+  else if(st==='more'&&!CONV.over&&(d||e.code==='Enter'||e.code==='Space')){ e.preventDefault(); talkStep(CONV.vm.answer(0)); }
+  else if(e.code==='Escape'||(CONV.over&&(e.code==='Enter'||e.code==='Space'||e.code==='KeyE'))){ e.preventDefault(); closeTalk(); } }
+function talkChoose(k){ if(!CONV||CONV.over) return; const vm=CONV.vm, op=vm.menu&&vm.menu[k]; if(!op) return; talkLine('you',op.text); talkStep(vm.answer(op.value)); }
+function talkAsk(t){ if(!CONV||CONV.vm.state!=='ask') return; CONV.echo=t; talkStep(CONV.vm.answer(t||'')); if(CONV&&CONV.echo!=null) talkLine('note',''); }
+function endTalk(){ if(!CONV||CONV.over) return; CONV.over=true; const {vm,o,who}=CONV, m=vm.mem, n=o.npc;
+  if(n){ n.goal=m[20]&15; n.att=m[21]&3; n.gtarg=m[22]&255; n.talked=m[23]?1:0; n.hp=Math.max(0,m[17]); n.xhome=m[12]&63; n.yhome=m[13]&63; }
+  CONVST.g[who]=Array.from(m.subarray(31,vm.cv.G)); CONV.tr.on=false; renderTrade(); }
+function closeTalk(){ if(!CONV) return; endTalk(); const {fx,o,c,dirty}=CONV; CONV=null; $('#talk').hidden=true;
+  if(c){ c.wait=1+Math.random()*2; }
+  let rebuild=false;
+  for(const f of fx){ // world effects the program asked for
+    if(f.k==='remove'){ const i=LV.objs.indexOf(o); if(i>=0) LV.objs.splice(i,1); LV.critters=LV.critters.filter(k=>k.o!==o); refreshObjs(); }
+    else if(f.k==='transform') rebuild=true;
+    else if(f.k==='talker'&&c&&tileAt(f.x,f.y)?.type){ c.x=c.hx=f.x+0.5; c.y=c.hy=f.y+0.5; o.tx=f.x; o.ty=f.y; o.fx=o.fy=3; c.h=supportAt(c.x,c.y,9)??c.h; if(o.npc){ o.npc.xhome=f.x; o.npc.yhome=f.y; } refreshObjs(); }
+    else if(f.k==='player'&&G.levels[f.lv]){ const t=G.levels[f.lv][(f.y*64+f.x)*4]&15; if(!t) continue; const yaw=P.yaw; if(f.lv!==LV.n) goLevel(f.lv,false); teleport(f.x,f.y); P.yaw=yaw; $('#where').textContent=levelName(LV.n); } }
+  if(rebuild){ buildCritters(); refreshObjs(); for(const k of LV.critters){ const fl=floorAt(k.x,-k.y); k.h=supportAt(k.x,k.y,Math.max(fl??0,k.o.z/32))??k.o.z/32; } }
+  else if(dirty) refreshObjs();
+  updateHeld(); drawPanel(); drawFlasks(); }
+const npcsWho=who=>LV.objs.filter(x=>x.npc&&x.npc.who===who);
+function convFn(name,v,ptrs,vm){ const C=CONV, o=C.o, t=C.tr, m=vm.mem, W=(p,x)=>{ if(p>0&&p<m.length) m[p]=x; };
+  switch(name){
+    // --- people ---
+    case 'switch_pic': setTalker(v[0]); return 1;
+    case 'set_attitude': for(const x of npcsWho(v[1])) x.npc.att=v[0]&3; if(v[1]===C.who) m[21]=v[0]&3; return 1;               // (attitude, whoami)
+    case 'set_race_attitude': { const r=Math.max(1,v[0]); for(const x of LV.objs) if(x.npc&&x.id===o.id&&!x.npc.b0a7&&(crit(x.id,9)&63)===v[2]&&Math.abs(x.tx-o.tx)<=r&&Math.abs(x.ty-o.ty)<=r){ x.npc.att=v[1]&3; if(x===o) m[21]=v[1]&3; } return 1; } // (range, attitude, faction)
+    case 'remove_talker': C.fx.push({k:'remove'}); return 1;
+    case 'teleport_talker': C.fx.push({k:'talker',x:v[1],y:v[0]}); return 1;           // (y, x)
+    case 'teleport_player': C.fx.push({k:'player',lv:v[0]-1,x:v[2],y:v[1]}); return 1; // (level 1-based, y, x)
+    case 'transform_talker': { const [a,pw,nw,ni]=v; if(ni!==-1){ o.id=(ni&0x30)+(ni&15)+0x40; C.fx.push({k:'transform'}); } if(nw!==-1&&o.npc){ o.npc.who=nw; m[14]=nw; } return 1; } // (flag, powerful, whoami, item id)
+    case 'set_sequence': { const seq={g:v[1]&7,f:v[0]&7}; for(const k of LV.critters) if(k.o.npc&&k.o.npc.who===v[2]) k.seq=seq; return 1; } // (frame, animation, whoami): CR.AN group = animation (unverified)
+    case 'gronk_door': { const x=v[2], y=v[1], d=LV.doors.find(d=>d.tx===x&&d.ty===y); if(!d) return 0; // (mode 0 open / 1 close / 2 toggle, y, x)
+      if(v[0]===2) d.id^=8; else if(v[0]===1) d.id&=~8; else d.id|=8; buildDoors(); return 1; }
+    // --- the Avatar ---
+    case 'x_exp': if(PL){ PL.exp=(PL.exp||0)+v[0]; } return (PL?.exp|0)>>4;
+    case 'x_skills': { const k=v[1], nv=v[0]; if(!PL||k<0||k>=PL.skills.length) return 0; // (value | 10000 raise | >10000 train, skill)
+      if(nv>10000){ if(PL.skills[k]>=30) return 0; PL.skills[k]++; return 1; } // training: no skill-point budget yet (ours)
+      if(nv===10000) PL.skills[k]=Math.min(30,PL.skills[k]+1); else if(nv>=0&&nv<=30) PL.skills[k]=nv; return PL.skills[k]; }
+    case 'x_traps': { const k=v[1], nv=v[0]; // (value or <0 to read, variable): 0-0xff game variables, 0x100+ quests, 0x190+ clocks
+      if(nv>=0&&k<0x3ff){ if(k<0x100) CONVST.t[k]=nv&0x3ff; else if(k<0x190) CONVST.q[k<0x180?k-0x100:128+k-0x180]=1; else CONVST.c[k-0x190]=nv; }
+      return k<0x100?CONVST.t[k]|0 : k<0x180?CONVST.q[k-0x100]|0 : k<=0x190?CONVST.q[128+k-0x180]|0 : k<0x200?CONVST.c[k-0x190]|0 : 0; }
+    // --- inventories ---
+    case 'do_inv_create': { const it=mkObj(v[0],63); npcInv(o).unshift(it); return hOf(it); }
+    case 'do_inv_delete': { const inv=npcInv(o), i=inv.findIndex(x=>x.id===v[0]); if(i<0) return 0; takeFromNpc(o,inv[i]); return 1; }
+    case 'take_from_npc': { const id=v[0], it=npcInv(o).find(x=>id>999?(x.id>>4)===id-1000:x.id===id); if(!it) return 0; takeFromNpc(o,it); return toPlayer(it)?1:0; } // (item id | 1000+class)
+    case 'take_id_from_npc': { const it=oOf(v[0]); if(!it) return 0; takeFromNpc(o,it); return toPlayer(it); }
+    case 'take_from_npc_inv': { const inv=npcInv(o); return hOf(inv[v[0]])||0; }
+    case 'place_object': { const it=oOf(v[2]), x=v[1], y=v[0]; if(!it||!tileAt(x,y)?.type) return 0; takeFromNpc(o,it); fromPlayer(it);
+      Object.assign(it,{tx:x,ty:y,fx:3,fy:3,lvl:LV.n}); it.z=Math.round((floorAt(x+0.5,-(y+0.5))??0)*32); LV.objs.push(it); C.dirty=true; return 1; } // (y, x, object)
+    case 'find_inv': { const id=v[1], match=x=>id>=1000?((x.id>>6)===((id-1000)>>2)&&((x.id>>4)&3)===((id-1000)&3)):x.id===id; // (who: 0 = talker, item id | 1000+class)
+      const it=v[0]===0?npcInv(o).find(match):invKeys().map(k=>INV[k]).find(match); return hOf(it); }
+    case 'count_inv': { const it=oOf(v[0]); return it?qtyOf(it):0; }
+    case 'check_inv_quality': { const it=oOf(v[0]); return it?it.q:0; }
+    case 'set_inv_quality': { const it=oOf(v[1]); if(it) it.q=v[0]&63; return 0; }            // (quality, object)
+    case 'identify_inv': { const it=oOf(v[3]); if(!it) return 0; W(ptrs[1],vm.newStr(itemName(it))); return itemValue(it,true,t.acc); }
+    case 'give_ptr_npc': { const it=oOf(v[1]); if(!it) return 0; if(tradeSel('pl').includes(it)){ giveNpc(o,it); talkLine('note',`(You hand over ${itemName(it)}.)`); drawPanel(); renderTrade(); return 1; }
+      giveNpc(o,it); return 0; }                                                               // (quantity, object)
+    case 'give_to_npc': { const sel=tradeSel('pl'), n=v[1]; if(sel.length<n) return 0; let any=false;  // (array of objects, count)
+      for(let s=0;s<n;s++){ const it=oOf(m[ptrs[0]+s]); if(it&&sel.includes(it)){ giveNpc(o,it); talkLine('note',`(You hand over ${itemName(it)}.)`); any=true; } } drawPanel(); renderTrade(); return any?1:0; }
+    case 'give_all_stuff': { let any=0; t.npc.forEach((x,i)=>{ t.npcSel[i]=!!x; if(x) any=1; }); t.pl.fill(null); if(any) swapTrade(); return any; }
+    // --- trading ---
+    case 'setup_to_barter': setupBarter(); talkLine('note','(Pick what you want from their goods, and put things from your pack on your side of the table.)'); return 0;
+    case 'set_likes_dislikes': t.likes=ptrs[1]; t.dislikes=ptrs[0]; return 0;                // (dislikes array, likes array)
+    case 'do_decline': t.npcSel.fill(false); t.npc.fill(null); t.on=false; renderTrade(); return 0;
+    case 'end_barter': t.on=false; renderTrade(); return 0;
+    case 'find_barter': { const id=v[0], sel=tradeSel('pl'); const it=sel.find(x=>id<1000?x.id===id:((x.id>>6)===((id-1000)>>2)&&((x.id>>4)&3)===((id-1000)&3))); return hOf(it); }
+    case 'find_barter_total': { const id=v[3], sel=tradeSel('pl').filter(x=>x.id===id); let q=0; sel.forEach((x,i)=>{ q+=qtyOf(x); W(ptrs[1]+i,hOf(x)); }); // (total, results, count, item id)
+      W(ptrs[2],sel.length); W(ptrs[0],q); return q?1:0; }
+    case 'show_inv': { const sel=tradeSel('pl'); for(let s=0;s<TRADE_SLOTS;s++){ W(ptrs[1]+s,sel[s]?sel[s].id:0); W(ptrs[0]+s,sel[s]?hOf(sel[s]):0); } return sel.length; } // (indices, ids)
+    case 'do_judgement': { const ap=plSkill(/apprais/i), acc=50-Math.floor(ap*45/30); const pv=sideValue('pl',false,acc), nv=sideValue('npc',false,acc)+t.bonus;
+      const e=nv?Math.trunc((pv-nv)*100/nv):100, cert=ap<6?0:ap<12?1:ap<18?2:ap<24?3:4;
+      const f=e>50?0:e>35?1:e>25?2:e>10?3:e>-10?4:e>-25?5:e>-35?6:e>-50?7:8, B7=G.STR.get(7)||[];
+      talkLine('narr',((B7[3+cert]||'')+(B7[2]||' that I am getting ')+(B7[8+f]||'')).trim()); return 0; }
+    case 'do_offer': { const S=i=>vm.expand(vm.str(v[i])); // (no items, tired, insulting, not enough, accepted, ...)
+      if(t.pat<0){ talkLine('npc',S(1)); return 0; }
+      if(!tradeSel('pl').length||!tradeSel('npc').length){ talkLine('npc',S(0)); return 0; }
+      const pv=sideValue('pl',true,t.acc), nv=sideValue('npc',true,t.acc), e=nv<=0?100:Math.trunc((pv-nv)*100/nv);
+      if(e>=t.thr){ talkLine('npc',S(4)); swapTrade(); return 1; }
+      let r=0; if(t.prev===0&&e*2<t.thr) r=1; else if(e>=t.prev){ r=((t.thr-t.prev)*3>>1)<=t.thr-e?0:1; } else r=2;
+      if(r===2){ talkLine('npc',S(2)); t.pat-=2; } else if(r===1){ talkLine('npc',S(3)); t.pat--; } t.prev=e; return 0; }
+    case 'do_demand': { const S=i=>vm.expand(vm.str(v[i])); // (refuses, gives in, nothing chosen)
+      if(!tradeSel('npc').length){ if(m[21]>1) m[21]--; talkLine('npc',S(2)); return 0; }
+      const mx=PL?.vit[1]||1, hp=PL?.vit[0]||1; const ps=2-Math.trunc(((mx-hp)<<1)/mx)+(PL?.level||1)+Math.trunc(plSkill(/charm/i)/6);
+      const ah=crit(o.id,4), n=o.npc||{hp:0,hunger:0}; let ns=ah>0?2-Math.trunc(((ah-n.hp)<<1)/ah):1; const di=(n.hunger&0x40)?-1:m[21]<2?1:0;
+      ns=Math.trunc(sideValue('npc',true,t.acc)/10)+(crit(o.id,0xd)&15)+di+ns; if(LV.n+1===9||LV.n+1===17) ns=ns*3>>1;
+      if(ps>ns){ talkLine('npc',S(1)); if(m[21]>1) m[21]--; swapTrade(); return 1; }
+      talkLine('npc',S(0)); m[20]=5; m[22]=1; return 0; } // refused: the talker turns on you
+    // --- objects anywhere on the level (all arguments are pointers; -1 = leave alone) ---
+    case 'x_obj_pos': { const it=oOf(v[4]), mode=v[3]; if(!it) return 0; const X=v[2], Y=v[1], Z=v[0]; // (z, y, x, mode, object)
+      if(mode===1){ if(X!==-1) it.fx=X&7; if(Y!==-1) it.fy=Y&7; if(Z!==-1) it.z=Z<=0x7f?Z:it.z; C.dirty=true; }
+      else if(mode===2){ if(it.npc){ if(X!==-1) it.npc.xhome=X; if(Y!==-1) it.npc.yhome=Y; } if(Z!==-1) W(ptrs[0],it.z); }
+      else if(mode===3){ if(X!==-1) W(ptrs[2],it.fx); if(Y!==-1) W(ptrs[1],it.fy); if(Z!==-1) W(ptrs[0],it.z); } return 0; }
+    case 'x_obj_stuff': { const it=oOf(v[8]), mode=v[7]; if(!it) return 0; const F=[['hd',6],['own',5],['fl',4],['link',3],['f1',2],['f0',1],['q',0]];
+      for(const [k,i] of F){ if(v[i]===-1) continue; if(mode===0) W(ptrs[i],it[k]|0); else { it[k]=v[i]; C.dirty=true; } } return 0; } // (quality, flag0, flag1, link, flags, owner, heading, mode, object)
+    // --- babl_hack: UW2's grab-bag (babl_hack.cs) ---
+    case 'babl_hack': switch(v[0]){
+      case 3: { const d=CONVST.q[133]|0; CONVST.q[133]=0; return d; }                          // Jospur's debt, read and cleared
+      case 5: for(const x of npcsWho(v[1])) x.npc.b0a7=1; return 0;
+      case 8: t.pat=v[1]*t.pat; return t.pat;
+      case 9: t.bonus=v[1]; return v[1];
+      case 10: return ['shl','shr','hl','hr'].some(k=>INV[k]?.id===0x35)?1:0; // wearing the Guardian's signet ring (no ring slots yet: any worn slot)
+      case 1: case 4: return 0;                                                               // pit-fight state: no fight is ever under way
+      case 0: case 2: talkLine('note','(Arena fights need combat, which is not built yet.)'); return 0;
+      case 7: { const it=oOf(v[1]); if(it) it.link=Math.max(0,(it.link|0)+v[2]); return it?1:0; } // recharge a wand (approximation: charges in link)
+      default: return 0; }
+  }
+  if(!C.logged) C.logged=new Set(); if(!C.logged.has(name)){ C.logged.add(name); console.info('conversation builtin not built yet:',name,v); } return 0;
+}
+
+// ---------- automap ----------
+function drawMap(){
+  const mc=$('#map'); const r=mc.getBoundingClientRect(); const dpr=window.devicePixelRatio||1;
+  const mw=Math.max(1,Math.round(r.width*dpr)), mh=Math.max(1,Math.round(r.height*dpr)); if(mc.width!==mw||mc.height!==mh){ mc.width=mw; mc.height=mh; }
+  const c=mc.getContext('2d'); const S=Math.min(mc.width,mc.height)/64; const ox=(mc.width-S*64)/2, oy=(mc.height-S*64)/2; mc._map={S,ox,oy};
+  c.clearRect(0,0,mc.width,mc.height); c.fillStyle='rgba(12,11,9,.82)'; c.fillRect(0,0,mc.width,mc.height);
+  for(let y=0;y<64;y++)for(let x=0;x<64;x++){ const t=tileAt(x,y); if(t.type===0) continue; const l=40+t.h*9;
+    c.fillStyle=`rgb(${l+30},${l+14},${l-6})`; const X=ox+x*S, Y=oy+(63-y)*S;
+    if(t.type===1||t.type>5) c.fillRect(X,Y,S+0.5,S+0.5);
+    else { c.beginPath(); const pts={2:[[0,1],[1,1],[1,0]],3:[[0,0],[0,1],[1,1]],4:[[0,0],[1,0],[1,1]],5:[[0,0],[1,0],[0,1]]}[t.type]; pts.forEach(([a,b],i)=>i?c.lineTo(X+a*S,Y+b*S):c.moveTo(X+a*S,Y+b*S)); c.fill(); } }
+  c.fillStyle='#e7b24a'; for(const k of LV.triggers.keys()){ const x=k&63,y=k>>6; c.fillRect(ox+(x+0.3)*S,oy+(63-y+0.3)*S,S*0.4,S*0.4); }
+  const px=ox+P.x*S, py=oy+(64+P.z)*S; c.save(); c.translate(px,py); c.rotate(P.yaw); c.fillStyle='#f4efe2';
+  c.beginPath(); c.moveTo(0,-S*1.2); c.lineTo(S*0.7,S*0.8); c.lineTo(-S*0.7,S*0.8); c.fill(); c.restore();
+}
+
+// ---------- UI glue ----------
+let msgTimer=0;
+function say(t){ const m=$('#msg'); m.textContent=t; m.style.opacity=t?1:0; clearTimeout(msgTimer); if(t) msgTimer=setTimeout(()=>m.style.opacity=0,3200); }
+let visited={}, LEVELSTATE={};
+function snapshotLevel(){ if(LV) LEVELSTATE[LV.n]={objs:LV.objs,doors:LV.doors,props:LV.props}; }
+function goLevel(n,place=true){ if(LV){ visited[LV.n]={x:P.x,z:P.z,yaw:P.yaw}; snapshotLevel(); }
+  loadLevel(n); $('#lvl').value=n; $('#where').textContent=levelName(n);
+  if(place){ const v=visited[n]; if(v){ P.x=v.x; P.z=v.z; P.yaw=v.yaw; P.y=floorAt(P.x,P.z)??0; P.tile=Math.floor(-P.z)*64+Math.floor(P.x); unstick(); } else placeStart(); } }
+
+function bindControls(){
+  const cv=$('#view');
+  addEventListener('keydown',e=>{ if(CONV){ talkKey(e); return; } if(e.target.tagName==='SELECT') return; keys.add(e.code); if(e.code==='KeyT'&&!e.repeat) talkTo(pick(0,0));
+    if(e.code==='KeyM'){ toggleMap(); } if(e.code==='KeyE'||e.code==='Space'){ act(0,0); e.preventDefault(); } if(e.code==='KeyG'&&!e.repeat){ INV.held?act(0,0):tryGet(pick(0,0)); } if(e.code==='KeyI'&&!e.repeat) togglePanel();
+    if(e.code==='KeyL'){ cycleLight(); } if(e.code==='KeyJ'&&!e.repeat){ jumpReq=true; } if(e.code==='PageDown'||e.code==='PageUp'){ stepLevel(e.code==='PageDown'?1:-1); } });
+  addEventListener('keyup',e=>keys.delete(e.code));
+  addEventListener('blur',()=>keys.clear());
+  cv.addEventListener('mousedown',e=>{ if(document.pointerLockElement===cv){ act(0,0); } else if(INV.held){ const r=cv.getBoundingClientRect(); act((e.clientX-r.left)/r.width*2-1,-((e.clientY-r.top)/r.height*2-1)); } else if(e.pointerType!=='touch') cv.requestPointerLock?.(); });
+  addEventListener('mousemove',e=>{ if(document.pointerLockElement!==cv) return; P.yaw+=e.movementX*0.0025; P.pitch=Math.max(-1.2,Math.min(1.2,P.pitch-e.movementY*0.0025)); });
+  // touch: left half = move stick, right half = look / tap to use
+  const tp=new Map();
+  cv.addEventListener('touchstart',e=>{ e.preventDefault(); for(const t of e.changedTouches){ const left=t.clientX<innerWidth*0.45;
+      tp.set(t.identifier,{left,x0:t.clientX,y0:t.clientY,x:t.clientX,y:t.clientY,t0:performance.now(),moved:0});
+      if(left&&!joy){ joy={id:t.identifier,dx:0,dy:0}; showStick(t.clientX,t.clientY,0,0); } } },{passive:false});
+  cv.addEventListener('touchmove',e=>{ e.preventDefault(); for(const t of e.changedTouches){ const s=tp.get(t.identifier); if(!s) continue;
+      const dx=t.clientX-s.x, dy=t.clientY-s.y; s.moved+=Math.abs(dx)+Math.abs(dy); s.x=t.clientX; s.y=t.clientY;
+      if(joy&&joy.id===t.identifier){ let jx=(t.clientX-s.x0)/55, jy=(t.clientY-s.y0)/55; const m=Math.hypot(jx,jy); if(m>1){jx/=m;jy/=m;} joy.dx=jx; joy.dy=jy; showStick(s.x0,s.y0,jx,jy); }
+      else if(!s.left){ P.yaw+=dx*0.006; P.pitch=Math.max(-1.1,Math.min(1.1,P.pitch-dy*0.006)); } } },{passive:false});
+  const end=e=>{ for(const t of e.changedTouches){ const s=tp.get(t.identifier); tp.delete(t.identifier); if(!s) continue;
+      if(joy&&joy.id===t.identifier){ joy=null; hideStick(); }
+      if(!s.left&&s.moved<12&&performance.now()-s.t0<350){ const r=cv.getBoundingClientRect(); act((t.clientX-r.left)/r.width*2-1, -((t.clientY-r.top)/r.height*2-1)); } } };
+  cv.addEventListener('touchend',end); cv.addEventListener('touchcancel',end);
+  $('#map').addEventListener('click',e=>{ const mc=$('#map'), m=mc._map; if(!m) return; const r=mc.getBoundingClientRect(); const dpr=mc.width/r.width;
+    const x=Math.floor(((e.clientX-r.left)*dpr-m.ox)/m.S), y=63-Math.floor(((e.clientY-r.top)*dpr-m.oy)/m.S); const t=tileAt(x,y);
+    if(t&&t.type!==0){ teleport(x,y); toggleMap(); say(''); } });
+  const closeText=()=>$('#scroll').hidden=true; $('#bClose').onclick=closeText; $('#scroll').onclick=e=>{ if(e.target.id==='scroll') closeText(); };
+  addEventListener('keydown',e=>{ if(e.code==='Escape'&&!CONV){ closeText(); $('#opts').hidden=true; } });
+  $('#tAskF').onsubmit=e=>{ e.preventDefault(); talkAsk($('#tAsk').value.trim()); }; $('#tAsk').addEventListener('keydown',e=>{ e.stopPropagation(); if(e.code==='Escape') closeTalk(); });
+  // typing a name must not walk the Avatar about
+  $('#ccName').addEventListener('keydown',e=>e.stopPropagation());
+  $('#bMap').onclick=()=>{ $('#opts').hidden=true; toggleMap(); }; $('#bLight').onclick=cycleLight;
+  $('#bPix').onclick=()=>{ chunky=!chunky; $('#bPix').textContent=chunky?'320×200':'Sharp'; $('#view').classList.toggle('chunky',chunky); };
+  $('#lvl').onchange=e=>{ goLevel(+e.target.value); e.target.blur(); $('#opts').hidden=true; };
+  $('#bOptClose').onclick=()=>$('#opts').hidden=true; $('#bSave').onclick=()=>showSlots(true); $('#bLoad').onclick=()=>showSlots(false); $('#bNew').onclick=openCreation;
+  $('#ccNameF').onsubmit=e=>{ e.preventDefault(); const v=$('#ccName').value.trim(); if(v){ CC.pl.name=v.slice(0,14); ccChoose(()=>{}); } }; $('#opts').onclick=e=>{ if(e.target.id==='opts') $('#opts').hidden=true; };
+  const bj=$('#bJump'); bj.addEventListener('touchstart',e=>{ e.preventDefault(); e.stopPropagation(); jumpReq=true; },{passive:false}); bj.onclick=()=>{ jumpReq=true; };
+  $('#bBag').onclick=togglePanel; $('#chain').onclick=()=>{ panelPage^=1; drawPanel(); };
+  $('#pcv').addEventListener('pointerdown',panelClick); $('#compass').onclick=()=>{ const d=S1(40+(Math.round(P.yaw/(Math.PI/4))%8+8)%8); say(d?`You are facing ${d.replace(/^to the /,'').toLowerCase()}.`:''); };
+  addEventListener('resize',layoutUI);
+  $('#bData').onclick=async()=>{ $('#bData').textContent='Forgetting…'; await cacheClear(); location.reload(); };
+}
+function toggleMap(){ showMap=!showMap; $('#map').hidden=!showMap; if(showMap){ document.exitPointerLock?.(); drawMap(); } }
+function cycleLight(){ lightIdx=(lightIdx+1)%LIGHTS.length; $('#bLight').textContent=LIGHTS[lightIdx][0]; }
+function stepLevel(d){ const ok=[...Array(80).keys()].filter(i=>G.levels[i]); const k=ok.indexOf(LV.n); goLevel(ok[(k+d+ok.length)%ok.length]); }
+function showStick(x,y,jx,jy){ const s=$('#stick'); s.hidden=false; s.style.left=x+'px'; s.style.top=y+'px'; s.firstElementChild.style.transform=`translate(${jx*34}px,${jy*34}px)`; }
+function hideStick(){ $('#stick').hidden=true; }
+
+// ---------- interface (art comes from the disc at runtime; nothing is embedded) ----------
+const UI={cache:new Map()};
+function imgCanvas(im){ const c=document.createElement('canvas'); c.width=im.w; c.height=im.h; const x=c.getContext('2d'), d=x.createImageData(im.w,im.h);
+  for(let i=0;i<im.w*im.h;i++){ const v=im.px[i]; if(!v&&!im.opaque) continue; d.data.set(G.pal.subarray(v*4,v*4+3),i*4); d.data[i*4+3]=255; }
+  x.putImageData(d,0,0); return c; }
+const canv=im=>{ if(!im) return null; if(!UI.cache.has(im)) UI.cache.set(im,imgCanvas(im)); return UI.cache.get(im); };
+const url=im=>im?canv(im).toDataURL():'';
+const iconOf=o=>canv(G.objImgs[o.id]);
+const CMDS=[['options','Options'],['talk','Talk'],['get','Get'],['look','Look'],['fight','Fight'],['use','Use']];
+let panelPage=0, skillPage=0;
+const SLOTS=[['shl',16.5,12.5],['shr',64.5,12.5],['hl',12.5,35],['hr',68,35],
+  ...[12.5,31,50,68].flatMap((x,i)=>[['b'+i,x,80.5]]),...[12.5,31,50,68].flatMap((x,i)=>[['b'+(i+4),x,99.5]])];
+function initUI(){
+  const f=G.files, gr=n=>f[n]?readGR(f[n],f['ALLPALS.DAT']):null;
+  Object.assign(UI,{heads:gr('HEADS.GR'),lfti:gr('LFTI.GR'),flasks:gr('FLASKS.GR'),comp:gr('COMPASS.GR'),chr:gr('CHRBTNS.GR'),chains:gr('CHAINS.GR'),scr:gr('SCRLEDGE.GR'),bodies:gr('BODIES.GR'),
+    panels:f['PANELS.GR']?readPanels(f['PANELS.GR']):null,charhead:gr('CHARHEAD.GR'),genhead:gr('GENHEAD.GR'),font:f['FONT5X6P.SYS']?readFont(f['FONT5X6P.SYS']):null,player:readPlayer(f['PLAYER.DAT'])});
+  if(UI.panels&&!UI.panels[0]) UI.panels=null;
+  const root=document.documentElement.style;
+  if(UI.panels){ const c=document.createElement('canvas'); c.width=20; c.height=12; c.getContext('2d').drawImage(canv(UI.panels[0]),-30,-57); root.setProperty('--stone-bg',`url(${c.toDataURL()})`); }
+  if(UI.chr){ root.setProperty('--btn-bg',`url(${url(UI.chr[0])})`); root.setProperty('--sq-bg',`url(${url(UI.chr[3])})`); }
+  if(UI.scr){ root.setProperty('--scroll-l',`url(${url(UI.scr[0])})`); root.setProperty('--scroll-r',`url(${url(UI.scr[10]||UI.scr[0])})`); }
+  const bag=G.objImgs[0x80]; if(bag) $('#bBag img').src=url(bag); else $('#bBag').textContent='Pack';
+  if(UI.chains) $('#chain img').src=url(UI.chains[0]); else $('#chain').textContent='⇅';
+  // palette colours the panels need: the stat labels' ink, and the flask liquids (most common colour of a full-level strip)
+  const common=im=>{ const h=new Map(); for(const v of im.px) if(v&&lum(v)>60) h.set(v,(h.get(v)||0)+1); return [...h].sort((a,b)=>b[1]-a[1])[0]?.[0]||0; };
+  const lum=v=>G.pal[v*4]*0.3+G.pal[v*4+1]*0.59+G.pal[v*4+2]*0.11;
+  if(UI.panels&&UI.panels[2]){ let best=0; for(let y=17;y<23;y++) for(let x=4;x<22;x++){ const v=UI.panels[2].px[y*79+x]; if(lum(v)>lum(best)) best=v; } UI.ink=best; }
+  if(UI.flasks&&UI.flasks.length>76){ // the flask art sits on a black box: clear the background connected to the edges
+    for(const i of [75,76]){ const im=UI.flasks[i], px=Uint8Array.from(im.px), bg=px[0], st=[]; for(let x=0;x<im.w;x++) st.push(x,(im.h-1)*im.w+x); for(let y=0;y<im.h;y++) st.push(y*im.w,y*im.w+im.w-1);
+      const out=Uint8Array.from(px); while(st.length){ const k=st.pop(); if(out[k]!==bg||px[k]!==bg||out[k]===0&&bg!==0) continue; out[k]=0; const x=k%im.w,y=(k/im.w)|0; if(x>0)st.push(k-1); if(x<im.w-1)st.push(k+1); if(y>0)st.push(k-im.w); if(y<im.h-1)st.push(k+im.w); }
+      UI.flasks[i]={w:im.w,h:im.h,px:out,bgMask:px}; } UI.liq=[common(UI.flasks[12]),common(UI.flasks[37])]; UI.liqTop=UI.liq.map((c,k)=>{ let b=c; for(const v of UI.flasks[k?37:12].px) if(v&&lum(v)>lum(b)) b=v; return b; }); }
+  const nav=$('#cmds'); nav.innerHTML='';
+  CMDS.forEach(([k,label],i)=>{ const b=document.createElement('button'); b.dataset.k=k; b.title=label; b.setAttribute('aria-label',label);
+    if(UI.lfti&&UI.lfti[i*2]){ const im=document.createElement('img'); im.className='px'; im.alt=''; b.appendChild(im); } else { b.className='txt'; b.textContent=label; }
+    b.onclick=()=>{ if(k==='options'){ document.exitPointerLock?.(); $('#opts').hidden=false; } else setMode(k); }; nav.appendChild(b); });
+  setMode('use'); layoutUI(); updateHeld(); drawPanel(); drawFlasks();
+}
+function setMode(k){ mode=k; [...$('#cmds').children].forEach((b,i)=>{ const on=b.dataset.k===k; b.classList.toggle('on',on); b.setAttribute('aria-pressed',on);
+  const im=b.querySelector('img'); if(im) im.src=url(UI.lfti[i*2+(on?1:0)]); });
+  if(k!=='use') say({look:'Look: click something to examine it.',get:'Get: click something to pick it up.',talk:'Talk: click someone to speak with them.',fight:'Fight.'}[k]||''); }
+function layoutUI(){ const small=innerWidth<760||matchMedia('(hover:none)').matches; const u=small?2:3; UI.u=u;
+  document.documentElement.style.setProperty('--u',u);
+  const cu=small?Math.min(1.9,(innerWidth-24)/(6*31)):2.4; $('#cmds').querySelectorAll('img').forEach((im,i)=>{ const s=UI.lfti[i*2]; im.style.width=s.w*cu+'px'; });
+  for(const id of ['#flaskH','#flaskM']){ const c=$(id); if(UI.flasks){ c.style.width=24*u+'px'; } else c.hidden=true; }
+  if(UI.flasks){ document.documentElement.style.setProperty('--fw',(24*u)+'px'); document.documentElement.style.setProperty('--fh',(UI.flasks[75].h*u)+'px'); }
+  const cp=$('#compass'); if(UI.comp){ cp.style.width=52*u+'px'; } else cp.hidden=true;
+  if(UI.scr) document.documentElement.style.setProperty('--scw',UI.scr[0].w*u+'px');
+  const ps=Math.max(2,Math.min(4,Math.floor(Math.min((innerHeight-140)/112,(innerWidth-40)/79)))); $('#pcv').style.width=79*ps+'px'; UI.ps=ps;
+  const ch=$('#chain img'); if(UI.chains) ch.style.width=15*ps*0.8+'px';
+  $('#held').style.width=16*u+'px'; }
+function drawFlasks(){ if(!UI.flasks||UI.flasks.length<77) return; const pl=PL||{vit:[1,1],mana:[0,0]};
+  [[$('#flaskH'),pl.vit,0],[$('#flaskM'),pl.mana,1]].forEach(([cv,[cur,max],k])=>{ const g=UI.flasks[75], m=UI.flasks[76]; cv.width=g.w; cv.height=g.h;
+    const x=cv.getContext('2d'); x.drawImage(canv(g),0,0); const frac=max?Math.max(0,Math.min(1,cur/max)):0;
+    const mk=m.bgMask||m.px, liq=(xx,y)=>!mk[y*m.w+xx]&&g.px[y*g.w+xx];
+    let y0=g.h, y1=0; for(let y=0;y<m.h;y++) for(let xx=0;xx<m.w;xx++) if(liq(xx,y)){ y0=Math.min(y0,y); y1=Math.max(y1,y); }
+    const top=Math.round(y1+1-frac*(y1-y0+1)), c=UI.liq[k], ct=UI.liqTop[k];
+    for(let y=top;y<=y1;y++) for(let xx=0;xx<m.w;xx++) if(liq(xx,y)){ const v=y===top?ct:c; x.fillStyle=`rgb(${G.pal[v*4]},${G.pal[v*4+1]},${G.pal[v*4+2]})`; x.fillRect(xx,y,1,1); }
+    cv.title=`${k?'Mana':'Vitality'} ${cur}/${max}`; }); }
+let compK=-1;
+function drawCompass(){ if(!UI.comp) return; const k=(Math.round(P.yaw/(Math.PI/2))%4+4)%4; if(k===compK) return; compK=k;
+  const im=UI.comp[k], cv=$('#compass'); cv.width=im.w; cv.height=im.h; cv.getContext('2d').drawImage(canv(im),0,0); }
+const textW=str=>{ const F=UI.font; let w=0; if(F) for(const ch of str) w+=(F.g[ch.charCodeAt(0)]?.w??F.space)+1; return w; };
+function text(x,str,px,py,v,align='left'){ const F=UI.font; if(!F) return; const w=textW(str);
+  let cx=align==='right'?px-w:align==='center'?px-w/2:px; x.fillStyle=`rgb(${G.pal[v*4]},${G.pal[v*4+1]},${G.pal[v*4+2]})`;
+  for(const ch of str){ const g=F.g[ch.charCodeAt(0)]; if(!g){ cx+=F.space+1; continue; } for(let y=0;y<F.h;y++) for(let i=0;i<g.w;i++) if(g.bit(i,y)) x.fillRect(Math.round(cx)+i,py+y,1,1); cx+=g.w+1; } }
+function drawPanel(){ const cv=$('#pcv'), x=cv.getContext('2d'); x.imageSmoothingEnabled=false; x.clearRect(0,0,79,112);
+  $('#chain').setAttribute('aria-label',panelPage?'Show inventory':'Show character');
+  if(panelPage===0){
+    if(UI.panels) x.drawImage(canv(UI.panels[0]),0,0); else { x.fillStyle='#2a2620'; x.fillRect(0,0,79,112); x.strokeStyle='#6a6254'; for(const [,sx,sy] of SLOTS){ x.beginPath(); x.arc(sx,sy,7.5,0,7); x.stroke(); } }
+    const bd=UI.bodies&&UI.bodies[(PL&&PL.body)||0]; if(bd) x.drawImage(canv(bd),22,3);
+    for(const [k,sx,sy] of SLOTS){ const o=INV[k]; if(o){ const c=iconOf(o); if(c) x.drawImage(c,Math.round(sx-c.width/2),Math.round(sy-c.height/2)); } }
+  } else {
+    if(UI.panels&&UI.panels[2]) x.drawImage(canv(UI.panels[2]),0,0); else { x.fillStyle='#2a2620'; x.fillRect(0,0,79,112); }
+    const pl=PL, v=UI.ink||0; if(!pl) return;
+    text(x,pl.name,39.5,3,v,'center'); if(pl.cls>=0) text(x,(G.STR.get(2)||[])[23+pl.cls]||'',39.5,10,v,'center');
+    const rows=[pl.str,pl.dex,pl.int,`${pl.vit[0]}/${pl.vit[1]}`,`${pl.mana[0]}/${pl.mana[1]}`,pl.exp??'-']; rows.forEach((r,i)=>text(x,String(r),73,17+i*7,v,'right'));
+    const names=(G.STR.get(2)||[]).slice(51,71), sk=pl.skills.map((n,i)=>[names[i]||'?',n]).filter(q=>q[1]>0);
+    skillPage=Math.min(skillPage,Math.max(0,Math.ceil(sk.length/6)-1));
+    sk.slice(skillPage*6,skillPage*6+6).forEach(([n,val],i)=>{ while(n.length>3&&textW(n)>58-textW(String(val))) n=n.slice(0,-1); text(x,n,7,62+i*7,v); text(x,String(val),73,62+i*7,v,'right'); });
+  } }
+function panelClick(e){ const r=e.currentTarget.getBoundingClientRect(), px=(e.clientX-r.left)/r.width*79, py=(e.clientY-r.top)/r.height*112; e.preventDefault();
+  if(panelPage===1){ if(py>101){ skillPage=Math.max(0,skillPage+(px<39?-1:1)); drawPanel(); } return; }
+  const sl=SLOTS.find(([,sx,sy])=>Math.hypot(sx-px,sy-py)<9); if(!sl) return; const k=sl[0], cur=INV[k];
+  if(INV.held){ INV[k]=INV.held; INV.held=cur; say(cur?`You now hold ${nameOf(cur.id)}.`:''); }
+  else if(cur){ if(mode==='look'){ describe(cur); return; } INV.held=cur; INV[k]=null; say(`You hold ${nameOf(cur.id)}. Tap a slot, or point into the world to put it down.`); }
+  updateHeld(); drawPanel(); }
+function togglePanel(){ const p=$('#panel'); p.hidden=!p.hidden; if(!p.hidden){ document.exitPointerLock?.(); drawPanel(); } }
+function updateHeld(){ const h=$('#held'); if(INV.held&&iconOf(INV.held)){ h.src=iconOf(INV.held).toDataURL(); h.hidden=false; } else h.hidden=true; }
+
+// ---------- the Avatar ----------
+// PL is the only player record the engine reads (flasks, stats page, saves).
+let PL=null;
+const S2=i=>((G.STR.get(2)||[])[i]||'').replace(/:\s*$/,'').trim();
+function discPlayer(){ const d=readPlayer(G.files['PLAYER.DAT']); if(!d) return {name:'Avatar',cls:-1,sex:0,body:0,str:15,dex:15,int:15,vit:[30,30],mana:[0,0],skills:Array(20).fill(0),exp:0};
+  return {name:d.name,cls:-1,sex:0,body:0,str:d.str,dex:d.dex,int:d.int,vit:d.vit.slice(),mana:d.mana.slice(),skills:[...d.skills,0],exp:null,disc:true}; }
+function setPlayer(pl){ PL=pl; drawPanel(); drawFlasks(); }
+
+// ---------- character creation ----------
+// Steps and wording follow the original (STRINGS block 2): sex, handedness, class, the class's skill picks
+// (SKILLS.DAT: 8 classes x 5 groups; a 1-entry group is granted, longer ones are a choice), appearance,
+// difficulty, name, keep. SKILLS.DAT's first 32 bytes read as 8 x (STR, DEX, INT, ?) class bases.
+// Rolls are OUR approximation (base + 0..10, skills 4..13, vitality 33..36, class mana after UA's UW1 script).
+function classData(){ const b=G.files['SKILLS.DAT']; const out=[]; if(!b) return null; let p=0x20;
+  for(let c=0;c<8;c++){ const groups=[]; for(let e=0;e<5;e++){ const n=b[p]; groups.push(Array.from(b.subarray(p+1,p+1+n))); p+=1+n; } out.push({base:Array.from(b.subarray(c*4,c*4+4)),groups}); }
+  return out; }
+const CLASS_MANA=[2,35,15,2,27,3,2,2];
+const rnd=(a,b)=>a+Math.floor(Math.random()*(b-a+1));
+let CC=null;
+function openCreation(){ document.exitPointerLock?.(); $('#menu').hidden=true; $('#opts').hidden=true;
+  CC={pl:{name:'Avatar',cls:-1,sex:0,hand:0,body:0,diff:0,str:0,dex:0,int:0,vit:[0,0],mana:[0,0],skills:Array(20).fill(0),exp:0},step:0,queue:[]}; ccRender(); $('#cc').hidden=false; }
+function ccSteps(){ const st=[['sex',S2(1)],['hand',S2(2)],['cls',S2(3)]]; for(let i=0;i<CC.queue.length;i++) st.push(['skill',S2(4),i]);
+  st.push(['look','Choose your appearance'],['diff',S2(6)],['name',S2(7)],['keep',S2(8)]); return st; }
+function ccChoose(fn){ fn(); CC.step++; ccRender(); }
+function ccRender(){ const st=ccSteps(), [kind,q,gi]=st[Math.min(CC.step,st.length-1)], pl=CC.pl, box=$('#ccOpts'); box.innerHTML=''; $('#ccNameF').hidden=kind!=='name';
+  $('#ccStep').textContent=`Step ${CC.step+1} of ${st.length}`; $('#ccQ').textContent=q+(kind==='name'?'':'');
+  const btn=(label,fn,cls='sbtn')=>{ const b=document.createElement('button'); b.className=cls; if(typeof label==='string') b.textContent=label; else b.appendChild(label); b.onclick=()=>ccChoose(fn); box.appendChild(b); return b; };
+  if(kind==='sex'){ btn(S2(9),()=>pl.sex=0); btn(S2(10),()=>pl.sex=1); }
+  else if(kind==='hand'){ btn(S2(11),()=>pl.hand=0); btn(S2(12),()=>pl.hand=1); }
+  else if(kind==='cls'){ const cd=classData(); for(let c=0;c<8;c++) btn(S2(23+c),()=>{ pl.cls=c; const base=cd?cd[c].base:[15,15,15,0];
+      pl.str=base[0]+rnd(0,10); pl.dex=base[1]+rnd(0,10); pl.int=base[2]+rnd(0,10); const v=rnd(33,36); pl.vit=[v,v]; pl.mana=[CLASS_MANA[c],CLASS_MANA[c]]; pl.skills=Array(20).fill(0);
+      CC.queue=[]; for(const g of (cd?cd[c].groups:[[0],[1]])){ if(g.length===1) pl.skills[g[0]]+=rnd(4,13); else if(g.length) CC.queue.push(g); } }); }
+  else if(kind==='skill'){ for(const k of CC.queue[gi]) btn(S2(31+k),()=>pl.skills[k]+=rnd(4,13)); }
+  else if(kind==='look'){ for(let i=0;i<5;i++){ const h=UI.heads&&UI.heads[pl.sex*5+i]; const c=document.createElement('canvas'); if(h){ c.width=h.w; c.height=h.h; c.getContext('2d').drawImage(canv(h),0,0); c.className='px'; }
+      btn(h?c:`Look ${i+1}`,()=>pl.body=pl.sex*5+i,h?'sbtn head':'sbtn').setAttribute('aria-label',`Appearance ${i+1}`); } }
+  else if(kind==='diff'){ btn(S2(13),()=>pl.diff=0); btn(S2(14),()=>pl.diff=1); }
+  else if(kind==='name'){ const i=$('#ccName'); i.value=pl.name; setTimeout(()=>i.focus(),50); }
+  else if(kind==='keep'){ btn(S2(15),()=>{ $('#cc').hidden=true; newGame(pl); }); btn(S2(16),()=>openCreation()); }
+  // live summary on the right, in the original's order
+  const h=UI.heads&&UI.heads[CC.step>st.findIndex(x=>x[0]==='look')?pl.body:pl.sex*5], hc=$('#ccHead'), x=hc.getContext('2d'); x.clearRect(0,0,64,70); if(h&&CC.step>0) x.drawImage(canv(h),0,0);
+  const L=(i,v)=>`<dt>${S2(i)}</dt><dd>${v}</dd>`; $('#ccStats').innerHTML=(CC.step>0?`<dt>${pl.sex?S2(10):S2(9)}</dt><dd>${CC.step>1?(pl.hand?S2(12):S2(11)):''}</dd>`:'')+
+    (pl.cls>=0?`<dt>${S2(23+pl.cls)}</dt><dd></dd>`+L(17,pl.str)+L(18,pl.dex)+L(19,pl.int)+L(20,pl.vit[1])+L(21,pl.mana[1])+pl.skills.map((v,k)=>v?`<dt>${S2(31+k)}</dt><dd>${v}</dd>`:'').join(''):''); }
+function newGame(pl){ PL=pl; for(const k in INV) INV[k]=null; LEVELSTATE={}; visited={}; LV=null; CONVST=newConvState(); GTIME=0; goLevel(0); setPlayer(pl); updateHeld(); say(S1(13)||''); }
+
+// ---------- saves ----------
+// Four slots like the original, kept in this browser (IndexedDB key "save<n>"): the player, inventory,
+// position, and every visited level's changed object lists (doors, levers, things moved). Creatures reset.
+const SLOTS_N=4;
+async function saveGame(k){ if(!LV) return; snapshotLevel(); visited[LV.n]={x:P.x,z:P.z,yaw:P.yaw};
+  const data={v:1,when:Date.now(),PL,INV:{...INV},lvl:LV.n,P:{x:P.x,y:P.y,z:P.z,yaw:P.yaw},visited,levels:LEVELSTATE,conv:CONVST,time:GTIME};
+  const ok=await kvPut('save'+k,data); say(ok?`Game saved in slot ${k+1}.`:'This browser would not store the save.'); }
+async function loadGame(k){ const d=await kvGet('save'+k); if(!d){ say('That slot is empty.'); return false; }
+  PL=d.PL; for(const key in INV) INV[key]=d.INV[key]??null; LEVELSTATE=d.levels||{}; visited=d.visited||{}; LV=null; CONVST=d.conv||newConvState(); GTIME=d.time||0;
+  loadLevel(d.lvl); $('#lvl').value=d.lvl; $('#where').textContent=levelName(d.lvl);
+  P.x=d.P.x; P.z=d.P.z; P.y=d.P.y; P.yaw=d.P.yaw; P.vy=0; P.tile=Math.floor(-P.z)*64+Math.floor(P.x); unstick();
+  setPlayer(PL); updateHeld(); say(`Welcome back, ${PL.name}.`); return true; }
+async function slotList(save){ const box=document.createElement('div'); box.className='stack';
+  for(let k=0;k<SLOTS_N;k++){ const d=await kvGet('save'+k); const b=document.createElement('button'); b.className='sbtn slot';
+    b.innerHTML=d?`${d.PL.name} · ${levelName(d.lvl)}<small>${new Date(d.when).toLocaleString()}</small>`:`Slot ${k+1}<small>empty</small>`;
+    b.disabled=!save&&!d; b.onclick=async()=>{ if(save) await saveGame(k); else if(!(await loadGame(k))) return; $('#opts').hidden=true; $('#menu').hidden=true; }; box.appendChild(b); }
+  return box; }
+async function showMenu(){ const body=$('#menuBody'); body.innerHTML=''; const st=document.createElement('div'); st.className='stack';
+  const add=(t,fn)=>{ const b=document.createElement('button'); b.className='sbtn'; b.textContent=t; b.onclick=fn; st.appendChild(b); return b; };
+  add('Create a character',openCreation);
+  let any=false; for(let k=0;k<SLOTS_N;k++) if(await kvGet('save'+k)) any=true;
+  if(any) add('Journey onward',async()=>{ body.innerHTML='<p class="keys">Choose a saved game.</p>'; body.appendChild(await slotList(false)); const bk=document.createElement('button'); bk.className='sbtn wide'; bk.textContent='Back'; bk.onclick=showMenu; body.appendChild(bk); });
+  add('Explore as the disc’s default character',()=>{ $('#menu').hidden=true; setPlayer(discPlayer()); });
+  body.appendChild(st); $('#menu').hidden=false; }
+async function showSlots(save){ const c=$('#opts .stonecard'); const keep=[...c.children]; c.innerHTML=`<h2>${save?'Save game':'Load game'}</h2>`;
+  c.appendChild(await slotList(save)); const bk=document.createElement('button'); bk.className='sbtn wide'; bk.textContent='Back'; bk.onclick=()=>{ c.innerHTML=''; keep.forEach(e=>c.appendChild(e)); }; c.appendChild(bk); }
+
+// ---------- boot ----------
+let started=false, picked=false, faulted=false;
+const stage=t=>{ $('#status').textContent=t; return new Promise(r=>setTimeout(r,30)); }; // let the browser paint the message
+function showFault(m){ console.error(m); if(!started){ $('#err').textContent='Something went wrong: '+m; $('#status').textContent=''; } else if(!faulted){ faulted=true; say('Engine error: '+m); } }
+async function start(files){
+  if(started) return; started=true;
+  try{ await stage('Unpacking textures, models and interface art…'); prepare(files); initGL(); initUI(); await stage('Building the world…'); }
+  catch(e){ started=false; throw e; }
+  const noCrit=!G.crit;
+  const sel=$('#lvl'); sel.innerHTML=''; for(let i=0;i<80;i++) if(G.levels[i]){ const o=document.createElement('option'); o.value=i; o.textContent=levelName(i); sel.appendChild(o); }
+  $('#loader').hidden=true; $('#game').hidden=false; bindControls(); goLevel(0); setPlayer(discPlayer()); showMenu();
+  if(noCrit) say('Creatures need the disc’s CRIT folder: choose Forget data in Options, then the disc image again.'); else if(!G.models||!UI.panels||!UI.heads) say('For real furniture, interface art and character creation, choose Forget data in Options, then your disc image again.');
+  let last=performance.now(); const frame=now=>{ const dt=Math.min(0.05,(now-last)/1000); last=now; try{ update(dt); render(); drawCompass(); }catch(e){ showFault(e.message); } requestAnimationFrame(frame); };
+  requestAnimationFrame(frame);
+  window.__uw={saveGame,loadGame,openCreation,get PL(){return PL;},kvGet,buildSprites,pick,geo,P,G,get LV(){return LV;},goLevel,teleport,use,act,tryGet,INV,UI,setMode:k=>setMode(k),togglePanel,drawPanel,render,update,supportAt,solidBlocks,blocked,unstick,jump:()=>{jumpReq=true;},startTalk,talkTo,talkChoose,talkAsk,closeTalk,get CONV(){return CONV;},get CONVST(){return CONVST;},convPrograms};
+}
+async function fromFiles(list){
+  const err=$('#err'); err.textContent=''; if(started){ err.textContent='The game is already running.'; return; } await stage('Reading the disc image…');
+  try{
+    let files={};
+    for(const f of list){ const name=f.name.toUpperCase(); const u8=new Uint8Array(await f.arrayBuffer());
+      if(name.endsWith('.ISO')||name.endsWith('.BIN')) Object.assign(files,isoExtract(u8)); else if(NEEDED.includes(name)||OPTIONAL.includes(name)) files[name]=u8; else if(isCritName(name)) files['CRIT/'+name]=u8; }
+    const missing=NEEDED.filter(n=>!files[n]);
+    if(missing.length) throw new Error(`Missing ${missing.join(', ')}. Choose the disc image, or all of these files from UW2/DATA.`);
+    picked=true; await start(files);
+    cachePut(files).then(ok=>{ if(!ok) console.warn('game data could not be stored; the disc will be needed next time'); });
+  }catch(e){ console.error(e); err.textContent=e.message; $('#status').textContent=''; }
+}
+$('#pick').addEventListener('change',e=>fromFiles([...e.target.files]));
+const dz=$('#loader'); dz.addEventListener('dragover',e=>{e.preventDefault(); dz.classList.add('over');}); dz.addEventListener('dragleave',()=>dz.classList.remove('over'));
+dz.addEventListener('drop',e=>{ e.preventDefault(); dz.classList.remove('over'); fromFiles([...e.dataTransfer.files]); });
+(async()=>{ const c=await cacheGet(); if(picked||started) return;
+  if(c&&NEEDED.every(n=>c[n])){ try{ await stage('Opening the Labyrinth…'); await start(c); }catch(e){ console.error(e); $('#err').textContent=e.message; $('#status').textContent=''; } } })();
+addEventListener('error',e=>showFault(e.message||String(e.error)));
+addEventListener('unhandledrejection',e=>showFault(e.reason&&e.reason.message||String(e.reason)));
+
+</script>
+</body></html>

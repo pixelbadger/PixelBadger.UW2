@@ -1,0 +1,6 @@
+node_modules/
+dist/
+coverage/
+*.iso
+/uw2-data/
+test-results/
