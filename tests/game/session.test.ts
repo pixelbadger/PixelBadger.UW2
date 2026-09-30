@@ -4,6 +4,7 @@ import { update } from '../../src/game/movement';
 import { pick } from '../../src/game/picking';
 import { applySave, makeSave, parseSave } from '../../src/game/saves';
 import { RAD } from '../../src/world/constants';
+import { writeGR } from '../../src/formats';
 import { DOOR, NPC, START, SWORD, TRIGGER, synthFiles } from '../helpers/synth';
 import { headlessGame, runTalk } from '../helpers/talk';
 
@@ -47,6 +48,21 @@ describe('a play session on the synthetic disc', () => {
     for (let t = 0; t < 3 && Math.floor(game.pose.x) === DOOR.x; t += 0.05) update(game, 0.05); // stop once teleported
     expect(Math.floor(game.pose.x)).toBe(TRIGGER.destX);
     expect(Math.floor(-game.pose.z)).toBe(TRIGGER.destY);
+  });
+
+  it('a door shows only the rows of its image with art, and the wall comes down to meet it', () => {
+    // UW2's door images have a blank band across the top: 13 empty rows here
+    const files = synthFiles();
+    files['DOORS.GR'] = writeGR(Array.from({ length: 8 }, (_, i) => ({ w: 32, h: 64, px: new Uint8Array(32 * 64).map((_, k) => (k < 13 * 32 ? 0 : 60 + i)) })));
+    const game = headlessGame(files), L = game.L, d = L.doors[0]!;
+    const [, , bottom, top] = L.scene.doorPanel(d)!;
+    expect(top - bottom).toBeCloseTo(51 / 64, 5); // 51 rows at 64 texels a tile
+    const mesh = L.scene.dynamic.mesh, vs: number[][] = [];
+    for (let i = 0; i < mesh.length; i += 6) vs.push(mesh.slice(i, i + 6));
+    // the leaf's top edge samples the first row with art, and the lintel's bottom edge is at the leaf's top
+    expect(vs.some(v => Math.abs(v[1]! - top) < 1e-6 && Math.abs(v[4]! - 13 / 64) < 1e-6)).toBe(true);
+    expect(vs.some(v => Math.abs(v[1]! - top) < 1e-6 && v[5] !== vs.find(w => Math.abs(w[4]! - 13 / 64) < 1e-6)![5])).toBe(true);
+    expect(vs.every(v => v[1]! <= 4 + 1e-6)).toBe(true);
   });
 
   it('get puts the sword in the first bag slot; the world sprite goes away', () => {
