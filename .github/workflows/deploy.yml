@@ -21,7 +21,9 @@ jobs:
 
   # The gate: tests against the original disc (tests/data, `npm run test:data`). The disc is never in the repository:
   # the repository secret UW2_DATA_URL points at a private copy (an .iso/.bin, or a .zip holding UW2/), cached between
-  # runs. Optional repository variable UW2_DATA_SHA256 pins its checksum. Without the secret the gate fails, and so
+  # runs. Optional repository variable UW2_DATA_SHA256 pins its checksum. For a file in a private GitHub repository,
+  # UW2_DATA_URL is its contents API URL (https://api.github.com/repos/OWNER/REPO/contents/PATH) and the secret
+  # UW2_DATA_TOKEN a token that can read that repository; the download then authenticates and asks for the raw file. Without the secret the gate fails, and so
   # the deploy does not happen.
   data-tests:
     name: data-tests
@@ -57,9 +59,14 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         env:
           URL: ${{ secrets.UW2_DATA_URL }}
+          TOKEN: ${{ secrets.UW2_DATA_TOKEN }}
         run: |
           mkdir -p ~/.cache/uw2-data
-          curl -fsSL --retry 4 --retry-delay 5 -o ~/.cache/uw2-data/disc "$URL"
+          if [ -n "$TOKEN" ]; then
+            curl -fsSL --retry 4 --retry-delay 5 -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github.raw" -o ~/.cache/uw2-data/disc "$URL"
+          else
+            curl -fsSL --retry 4 --retry-delay 5 -o ~/.cache/uw2-data/disc "$URL"
+          fi
       - name: Verify and unpack the disc
         env:
           SHA: ${{ vars.UW2_DATA_SHA256 }}

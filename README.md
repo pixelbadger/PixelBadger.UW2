@@ -38,7 +38,9 @@ One-time repository settings (an admin must do these; workflows can't):
    require status check **build-test** to pass, block force pushes.
 3. Settings → Secrets and variables → Actions: secret **`UW2_DATA_URL`**, a private download link to your disc
    image (.iso/.bin) or a .zip holding `UW2/`. Optionally the variable **`UW2_DATA_SHA256`** (its checksum) to pin it;
-   the download is cached under that key. Deploys are blocked until the secret is set.
+   the download is cached under that key. Deploys are blocked until the secret is set. For a disc kept in a private
+   GitHub repository: `UW2_DATA_URL` = `https://api.github.com/repos/OWNER/REPO/contents/PATH` and the secret
+   **`UW2_DATA_TOKEN`** = a fine-grained token with read access to that repository's contents.
 
 ## Licence
 MIT (code). Fonts: Alegreya / Alegreya SC (SIL OFL), bundled. Ultima Underworld II data is © its owners and is not
