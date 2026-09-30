@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   DataError, LEVEL_BYTES, LIMITS, decodeLevel, readArk, readConv, readCritPage, readGR, readModels, readStrings, rleDecode,
   uw2CompressLiteral, uw2Decompress, writeArk, writeGR, writeStrings,
+  CUTS_ARGS, readCutsScript, readLpf, readVoc, writeCutsScript, writeLpf, writeVoc,
 } from '../../src/formats';
+import { CutscenePlayer } from '../../src/cuts/player';
+import { synthHost } from '../helpers/synthCuts';
 import { ConvVM } from '../../src/conv/vm';
 import { filesFromIso } from '../../src/data/files';
 import { GameData } from '../../src/data/gamedata';
@@ -196,6 +199,43 @@ describe('levels and the whole data set', () => {
       for (const [i, v] of edits) b[i % b.length] = v;
       f[name] = cut ? b.subarray(0, b.length >> 1) : b;
       hostile(() => { const D = new GameData(f); D.conversations(); });
+    }), { numRuns: 120 });
+  });
+});
+
+describe('cutscene data', () => {
+  const lpf = writeLpf({ w: 16, h: 8, fps: 10, pal: new Uint8Array(1024), frames: [new Uint8Array(128).fill(3), new Uint8Array(128).map((_, i) => i)], loopDelta: true });
+  it('LPF files decode every frame or throw DataError, never writing outside the frame', () => {
+    // mutate the header and the first page (the rest of a 64K page is padding)
+    const head = lpf.subarray(0, 0xb00 + 600);
+    fc.assert(fc.property(fc.oneof(bytes(4096), mutated(head)), buf => {
+      const L = hostile(() => readLpf(buf));
+      if (L instanceof DataError) return;
+      expect(L.w * L.h).toBeLessThanOrEqual(LIMITS.maxLpfPixels);
+      const px = new Uint8Array(L.w * L.h + 16).fill(0xee), view = px.subarray(0, L.w * L.h);
+      for (let i = 0; i < Math.min(L.nFrames, 50); i++) hostile(() => L.decode(i, view));
+      expect([...px.subarray(L.w * L.h)].every(v => v === 0xee)).toBe(true);
+    }), RUNS);
+  });
+  it('control scripts and VOC files parse or throw DataError', () => {
+    const script = writeCutsScript([{ frame: 0, cmd: 13, args: [241, 0, 5] }, { frame: 5, cmd: 5, args: [] }, { frame: 0, cmd: 6, args: [] }]);
+    const voc = writeVoc({ rate: 8000, pcm: new Uint8Array(300).fill(128) });
+    fc.assert(fc.property(fc.oneof(bytes(), mutated(script)), buf => { const r = hostile(() => readCutsScript(buf)); if (!(r instanceof DataError)) expect(r.length).toBeLessThanOrEqual(buf.length / 4); }), RUNS);
+    fc.assert(fc.property(fc.oneof(bytes(), mutated(voc)), buf => { const r = hostile(() => readVoc(buf)); if (!(r instanceof DataError)) expect(r.pcm.length).toBeLessThanOrEqual(buf.length); }), RUNS);
+  });
+  it('the player finishes (or waits for a skip) on any script over any files, without throwing', () => {
+    const base = synthHost();
+    const cmd = fc.record({ frame: fc.oneof(fc.nat(12), fc.constant(999)), cmd: fc.constantFrom(...Object.keys(CUTS_ARGS).map(Number)), a: fc.array(fc.oneof(fc.nat(12), fc.constantFrom(996, 998, 999, 0xffff, 640)), { minLength: 4, maxLength: 4 }) })
+      .map(c => ({ frame: c.frame, cmd: c.cmd, args: c.a.slice(0, CUTS_ARGS[c.cmd]) }));
+    const fileKeys = Object.keys(base.files);
+    fc.assert(fc.property(fc.array(cmd, { maxLength: 24 }), fc.array(fc.tuple(fc.constantFrom(...fileKeys), fc.nat(), fc.integer({ min: 0, max: 255 })), { maxLength: 8 }), fc.integer(), (cmds, edits, seed) => {
+      const files: Record<string, Uint8Array> = { ...base.files, 'CUTS/CS000.N00': writeCutsScript(cmds) };
+      for (const [k, at, v] of edits) { const b = files[k]!.slice(); b[at % b.length] = v; files[k] = b; }
+      const p = new CutscenePlayer(0, synthHost(files, seed).host);
+      for (let k = 0; k < 40 && !p.done; k++) p.update(0.5); // 20 s of show, then skip whatever is left
+      if (!p.done) p.skip();
+      expect(p.done).toBe(true);
+      expect(p.screen.length).toBe(64000);
     }), { numRuns: 120 });
   });
 });

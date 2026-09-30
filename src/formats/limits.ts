@@ -39,4 +39,12 @@ export const LIMITS = {
   vmMaxArgs: 16,
   /** Objects followed along one level link chain. */
   maxChain: 1024,
+  /** Pixels in one LPF frame (UW2's cutscenes are 320x200). */
+  maxLpfPixels: 640 * 480,
+  /** Frames in one LPF file (the credits, CS012.N01, are the longest by far). */
+  maxLpfFrames: 16384,
+  /** Records in one cutscene control script (.N00). */
+  maxCutsCommands: 8192,
+  /** Sample bytes in one VOC file (UW2's longest speech is a few hundred KB). */
+  maxVocBytes: 16 << 20,
 } as const;

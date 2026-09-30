@@ -119,4 +119,12 @@ p{line-height:1.55;margin:0 0 1rem;color:#d8ccb2;max-width:62ch}
 .tslot i{position:absolute;right:2px;bottom:0;font:700 .7rem Alegreya,serif;color:var(--parch);text-shadow:0 1px 2px #000}
 #tAskF{display:flex;gap:8px} #tAsk{flex:1;font:1.05rem Alegreya,serif;padding:6px 8px;background:#1b1814;color:var(--parch);border:1px solid #5a5246}
 @media (max-width:560px){ .who h2{font-size:1.05rem} #tLog{font-size:.98rem} }
+/* cutscenes: the 320x200 frame at the original's 4:3, letterboxed on black */
+#cuts{position:absolute;inset:0;z-index:20;display:grid;place-items:center;background:#000;cursor:pointer;touch-action:none}
+#cutsCv{width:min(100vw,calc(100dvh * 4 / 3));height:auto;aspect-ratio:4/3;display:block}
+#cutsSub{position:absolute;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 4vh);transform:translateX(-50%);width:min(40rem,92vw);text-align:center;
+  font-size:1.2rem;line-height:1.4;color:var(--parch);text-shadow:0 1px 3px #000;white-space:pre-line;pointer-events:none}
+#cutsSub.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+#cutsHint{position:absolute;right:14px;top:calc(env(safe-area-inset-top,0px) + 10px);margin:0;font:italic .9rem Alegreya,serif;color:var(--ash);transition:opacity 1s;pointer-events:none}
+#cutsHint.gone{opacity:0}
 [hidden]{display:none!important}

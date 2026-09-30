@@ -42,8 +42,17 @@ export interface UiPort {
   showText(text: string, title?: string): void;
   /** Release the mouse (any UI that needs a cursor). */
   releasePointer(): void;
+  /** Plays cutscene n over everything while the world waits. Resolves when it ends or is skipped (at once without the data). */
+  cutscene(n: number): Promise<CutsceneEnd>;
+  /** The game is won (after the ending). */
+  victory(): void;
   talk: TalkView;
 }
 
+export type CutsceneEnd = 'done' | 'skipped';
+
 export const nullTalkView = (): TalkView => ({ open() {}, close() {}, setTalker() {}, line() {}, prompt() {}, trade() {} });
-export const nullUi = (): UiPort => ({ say() {}, levelChanged() {}, inventoryChanged() {}, playerChanged() {}, showText() {}, releasePointer() {}, talk: nullTalkView() });
+export const nullUi = (): UiPort => ({
+  say() {}, levelChanged() {}, inventoryChanged() {}, playerChanged() {}, showText() {}, releasePointer() {},
+  cutscene: () => Promise.resolve('done'), victory() {}, talk: nullTalkView(),
+});

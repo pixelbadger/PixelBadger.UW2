@@ -1,4 +1,33 @@
-# Cutscenes (researched, not implemented)
+# Cutscenes
+
+## Implementation
+
+| Piece | Where |
+| --- | --- |
+| LPF animations, `.N00` scripts, VOC speech, LBACK screens, PALS.DAT palettes (+ writers for tests) | `src/formats/cuts.ts` |
+| The player: segments, frames at the LPF's rate, fades, CRNG colour cycling, palette lerps (19), panoramas (20-23) with the sprite overlay and backdrop swap, subtitles, voice timing, the title's splash (BYT.ARK 6/7) | `src/cuts/player.ts` (no DOM; virtual time) |
+| When they play: startup (9, 0, 1), quest 143 after a talk, dreams when sleeping in a bed (0x167) | `src/game/cutscenes.ts` |
+| The screen: 320x200 at 4:3, FONTBIG subtitles, WebAudio speech, Esc/Space/Enter/click skips; menu entries Introduction and Acknowledgements | `src/ui/cutscene.ts`, `src/ui/menus.ts` |
+| Intake: `UW2/CUTS/*` (CSnnn.Nxx, LBACKnnn.BYT) as `CUTS/<name>`, `UW2/SOUND/BSPnn.VOC` as `SOUND/<name>`, `FONTBIG.SYS`, `BYT.ARK` | `src/data/files.ts` |
+
+The player follows UnderworldGodot's `cutsplayer` closely. Where the original's behaviour is not known it approximates,
+and says so in the code: fades take 2/rate s (running alongside an animation when fired during one, blocking
+elsewhere); a script with no fade-in starts at full brightness; CRNG ignores the flags field; rep-seg (7), music (25)
+and commands 1, 2, 11, 12, 15, 18, 24, 26 do nothing. A missing or damaged file is reported in `player.problems` and
+the show goes on without it.
+
+Not built yet: music (25, needs XMI playback), the small-window cutscenes (0x100+, e.g. the death skulls), a victory
+screen after the ending (the main menu opens instead), the original's sleep messages and what sleep does besides
+dreaming. Still UNVERIFIED: quest 143 as the trigger (no conversation was seen setting it) and the dream rules.
+
+Browsers may refuse sound until the page has had a click or key press; the pictures and subtitles play regardless.
+Data stored before cutscenes were extracted lacks `CUTS/`: the game says to choose Forget data and the disc again.
+
+Tests: `tests/formats/cuts.test.ts` and `tests/cuts/player.test.ts` on synthetic files (`tests/helpers/synthCuts.ts`),
+fuzzing in `tests/formats/fuzz.test.ts`, triggers in `tests/game/cutscenes.test.ts`, and the real disc in
+`tests/data/cutscenes.test.ts` (`npm run test:data`, see CLAUDE.md).
+
+## Research
 
 Carried over verbatim from the single-file engine's header (legacy/uw2-web-engine.html). Verified against the real data unless marked.
 

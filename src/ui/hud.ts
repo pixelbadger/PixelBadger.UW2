@@ -2,8 +2,9 @@ import { S1, levelName } from '../data/text';
 import type { Game, Mode } from '../game/game';
 import { slotClick } from '../game/interact';
 import type { SlotKey } from '../game/inventory';
-import type { TalkView, UiPort } from '../game/ports';
+import type { CutsceneEnd, TalkView, UiPort } from '../game/ports';
 import type { Art } from './art';
+import type { CutsceneView } from './cutscene';
 import { $, el, releasePointer } from './dom';
 
 // The in-game interface in the original's style, modernised: command icons that set a mode, flasks, compass, the
@@ -24,6 +25,8 @@ export class Hud implements UiPort {
   u = 3;
   ps = 3;
   onOptions: () => void = () => {};
+  onVictory: () => void = () => {};
+  cuts: CutsceneView | null = null;
 
   constructor(private readonly game: Game, private readonly art: Art, readonly talk: TalkView) {}
 
@@ -46,6 +49,8 @@ export class Hud implements UiPort {
     this.say('');
   }
   releasePointer(): void { releasePointer(); }
+  cutscene(n: number): Promise<CutsceneEnd> { return this.cuts ? this.cuts.play(n) : Promise.resolve('done'); }
+  victory(): void { this.onVictory(); }
 
   // ---------- set-up ----------
   init(): void {
@@ -98,8 +103,7 @@ export class Hud implements UiPort {
     if (A.scr?.[0]) root.setProperty('--scw', A.scr[0].w * u + 'px');
     const ps = Math.max(2, Math.min(4, Math.floor(Math.min((innerHeight - 140) / 112, (innerWidth - 40) / 79))));
     $('#pcv').style.width = 79 * ps + 'px'; this.ps = ps;
-    const ch = $('#chain img');
-    if (A.chains) ch.style.width = 15 * ps * 0.8 + 'px';
+    if (A.chains) $('#chain img').style.width = 15 * ps * 0.8 + 'px'; // without CHAINS.GR the chain is a text button
     $('#held').style.width = 16 * u + 'px';
   }
 

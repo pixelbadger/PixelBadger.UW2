@@ -14,7 +14,7 @@
   <p>Choose your <em>Ultima Underworld I &amp; II</em> disc image (.iso), or the files from its <code>UW2/DATA</code> folder. The game data is read here in your browser and kept on this device for next time; nothing is uploaded.</p>
   <label class="pickbtn" tabindex="0">Choose disc image<input id="pick" type="file" multiple hidden></label>
   <div id="status"></div><div id="err"></div>
-  <p class="fine">You can also drop the file anywhere on this page. Walk every level with its original textures, lighting, doors, stairs and ladders. Creatures are animated and wander about, and books, letters and signs can be read. You can pick things up and carry them, and talk with the people you meet. You can trade with them too. Combat and spells are not built yet.</p>
+  <p class="fine">You can also drop the file anywhere on this page. Walk every level with its original textures, lighting, doors, stairs and ladders. Creatures are animated and wander about, and books, letters and signs can be read. You can pick things up and carry them, and talk with the people you meet. You can trade with them too. The cutscenes play with their speech. Combat and spells are not built yet.</p>
 </div></div>
 <div id="game" hidden>
   <canvas id="view" class="chunky"></canvas>
@@ -54,6 +54,8 @@
     <form id="tAskF" hidden><input id="tAsk" maxlength="40" autocomplete="off" spellcheck="false" aria-label="What do you say?"><button class="sbtn">Say</button></form>
   </div></div>
   <div id="scroll" hidden role="dialog" aria-modal="true"><div class="sheet"><h2></h2><div></div><button id="bClose">Close</button></div></div>
+  <div id="cuts" hidden role="dialog" aria-modal="true" aria-label="Cutscene"><canvas id="cutsCv" class="px" width="320" height="200"></canvas>
+    <div id="cutsSub" aria-live="polite"></div><p id="cutsHint">Esc or tap to skip</p></div>
 </div>
 </body>
 </html>

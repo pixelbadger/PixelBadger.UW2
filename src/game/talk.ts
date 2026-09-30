@@ -12,6 +12,7 @@ import { discPlayer } from './player';
 import { eye } from './picking';
 import type { LineKind, TradeView } from './ports';
 import { convBuiltin } from './talkBuiltins';
+import { afterTalk } from './cutscenes';
 
 // Conversations: CNV.ARK programs run on ConvVM. Talking pauses the world. The VM yields at every menu, typed answer
 // and pause; the panel feeds the answer back. Per-slot private globals (31..G-1), quest flags, x_clock clocks, game
@@ -319,5 +320,6 @@ export function closeTalk(game: Game): void {
   if (rebuild) game.rebuildCreatures();
   else if (refresh) game.refreshAll();
   game.ui.inventoryChanged(); game.ui.playerChanged();
+  void afterTalk(game);
 }
 
