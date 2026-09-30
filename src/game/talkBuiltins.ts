@@ -1,7 +1,7 @@
 import type { ObjRec } from '../formats';
 import type { ConvVM } from '../conv/vm';
 import { critByte, itemName, qtyOf, skillNo } from '../data/text';
-import { WORN } from './inventory';
+import { RINGS } from './inventory';
 import { mkObj, npcInv } from './loot';
 import { gainExp } from './rules';
 import type { TalkSession } from './talk';
@@ -86,7 +86,7 @@ export function convBuiltin(C: TalkSession, name: string, v: number[], ptrs: num
     }
     case 'find_inv': { // (who: 0 = talker, item id | 1000+class)
       const match = matchId(v[1]!);
-      return C.hOf(v[0] === 0 ? npcInv(game, o).find(match) : inv.items().find(match));
+      return C.hOf(v[0] === 0 ? npcInv(game, o).find(match) : inv.everything().find(match));
     }
     case 'count_inv': { const it = C.oOf(v[0]!); return it ? qtyOf(it) : 0; }
     case 'check_inv_quality': { const it = C.oOf(v[0]!); return it ? it.q : 0; }
@@ -190,7 +190,7 @@ export function convBuiltin(C: TalkSession, name: string, v: number[], ptrs: num
         case 5: for (const x of npcsWho(v[1]!)) x.npc!.b0a7 = 1; return 0;
         case 8: t.pat = v[1]! * t.pat; return t.pat;
         case 9: t.bonus = v[1]!; return v[1]!;
-        case 10: return WORN.some(k => inv.get(k)?.id === 0x35) ? 1 : 0; // wearing the Guardian's signet ring (no ring slots yet: any worn slot)
+        case 10: return RINGS.some(k => inv.get(k)?.id === 0x35) ? 1 : 0; // wearing the Guardian's signet ring
         case 1: case 4: return 0; // pit-fight state: no fight is ever under way
         case 0: case 2: C.line('note', '(Arena fights need combat, which is not built yet.)'); return 0;
         case 7: { const it = C.oOf(v[1]!); if (it) it.link = Math.max(0, (it.link | 0) + v[2]!); return it ? 1 : 0; } // recharge (approximation: charges in link)

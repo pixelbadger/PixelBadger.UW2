@@ -19,6 +19,10 @@ export class CutsceneView {
   private audio: AudioContext | null = null;
   private src: AudioBufferSourceNode | null = null;
   private hintTimer = 0;
+  private played = false;
+  /** Cutscene music (command 25) and its end: the page's audio decides what that means. */
+  onMusic: (n: number) => void = () => {};
+  onMusicDone: () => void = () => {};
 
   constructor(private readonly game: Game, private readonly art: Art) {
     const cv = $<HTMLCanvasElement>('#cutsCv');
@@ -37,6 +41,7 @@ export class CutsceneView {
     const D = this.game.data;
     const p = new CutscenePlayer(n, {
       file: k => D.files[k], str: (b, i) => D.block(b)[i], rng: this.game.rng, voice: v => this.voice(v),
+      music: m => { this.played = true; this.onMusic(m); },
     });
     this.player = p; this.drawn = -1;
     releasePointer();
@@ -78,6 +83,7 @@ export class CutsceneView {
     const p = this.player, res = this.resolve;
     this.player = null; this.resolve = null;
     this.voice(null);
+    if (this.played) { this.played = false; this.onMusicDone(); }
     $('#cuts').hidden = true;
     $('#cutsSub').textContent = '';
     if (res) res(p?.skipped ? 'skipped' : 'done');

@@ -1,6 +1,7 @@
 import { CUTSCENE, INTRODUCTION } from '../game/cutscenes';
 import type { Game } from '../game/game';
 import { discPlayer } from '../game/player';
+import { THEME, holdMusic, releaseMusic } from '../game/sound';
 import { SAVE_SLOTS, SaveError, applySave, describeSave, makeSave, parseSave } from '../game/saves';
 import { kvGet, kvPut, saveKey } from '../storage/kv';
 import { $, el } from './dom';
@@ -53,6 +54,7 @@ export class Menus {
    * (load); plus exploring as the disc's default character.
    */
   async showMain(): Promise<void> {
+    holdMusic(this.game, THEME.intro);
     const body = $('#menuBody'), st = el('div', { className: 'stack' });
     body.replaceChildren();
     const add = (t: string, fn: () => void) => { const b = el('button', { className: 'sbtn', onclick: fn }, t); st.append(b); return b; };
@@ -66,7 +68,7 @@ export class Menus {
       body.replaceChildren(el('p', { className: 'keys' }, 'Choose a saved game.'), await slotList(this.game, false, () => ($('#menu').hidden = true)),
         el('button', { className: 'sbtn wide', onclick: () => this.showMain() }, 'Back'));
     });
-    add('Explore as the disc’s default character', () => { $('#menu').hidden = true; this.game.resetCombat(); this.game.setPlayer(discPlayer(this.game.data)); });
+    add('Explore as the disc’s default character', () => { $('#menu').hidden = true; releaseMusic(this.game); this.game.resetCombat(); this.game.setPlayer(discPlayer(this.game.data)); });
     body.append(st);
     $('#menu').hidden = false;
   }

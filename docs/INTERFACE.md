@@ -36,5 +36,14 @@ Carried over verbatim from the single-file engine's header (legacy/uw2-web-engin
    swings (P bash, ; slash, . stab, or by height on the view), the power gem beside the compass, the
    eyes above the view, the rune bag on the panel (PANELS.GR 1, opened by using the bag), the rune
    shelf beside the compass (tap or C casts), active spell icons top right. R opens the rune bag (ours).
+ - The paperdoll (docs/ITEMS.md) keeps the original's panel: worn armour drawn from ARMOR_M/F.GR on the body, rings,
+   shoulders, hands, eight bag places; an open container shows its picture left of the bag (tap to close) and the
+   BUTTONS.GR arrows to scroll; stacks show their count; the panel shows the stones still carriable. Taps: in use mode
+   a tap uses what can be used and picks up the rest; other modes pick up; look describes; a right-click or long press
+   always picks up; Shift takes one of a stack. The positions follow UnderworldGodot's layout of the same art, placed
+   relative to the body picture.
+ - Sound (docs/SOUND.md): Options has Music and Sounds switches (remembered in this browser). The Light button now
+   starts at "Carried light" (what the Avatar carries, spells and the level's own light); the others force at least
+   candle, torch, lantern or daylight.
 
 ```

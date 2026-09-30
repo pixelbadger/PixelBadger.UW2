@@ -135,7 +135,7 @@ export class TalkSession {
   fromPlayer(it: ObjRec): boolean {
     const k = this.game.inv.remove(it);
     if (!k) return false;
-    if (k !== 'held') { const s = this.tr.pl.indexOf(k); if (s >= 0) this.tr.pl[s] = null; }
+    if (k !== 'held' && k !== 'inside') { const s = this.tr.pl.indexOf(k); if (s >= 0) this.tr.pl[s] = null; }
     return true;
   }
   giveNpc(it: ObjRec): void { this.fromPlayer(it); npcInv(this.game, this.o).unshift(it); }
@@ -239,7 +239,7 @@ function indexLevel(game: Game): Map<number, ObjRec> {
   for (const o of L.all) m.set(o.i, o);
   for (const list of [L.objs, L.doors, L.props]) for (const o of list) if (o.lvl === L.n) m.set(o.i, o);
   for (const o of L.objs) if (o.items) for (const it of o.items) if (it.lvl === L.n && it.i > 0) m.set(it.i, it);
-  for (const it of game.inv.all()) if (it.lvl === L.n && it.i > 0) m.set(it.i, it);
+  for (const it of game.inv.everything()) if (it.lvl === L.n && it.i > 0) m.set(it.i, it);
   return m;
 }
 

@@ -1,6 +1,6 @@
 import './styles.css';
 import { GameData } from './data/gamedata';
-import { filesFromPicked, hasCutscenes, hasNeeded, type GameFiles } from './data/files';
+import { filesFromPicked, hasCutscenes, hasNeeded, hasSound, type GameFiles } from './data/files';
 import { levelName } from './data/text';
 import { Game } from './game/game';
 import { act, talkTo, tryGet, use } from './game/interact';
@@ -10,7 +10,9 @@ import { closeTalk, startTalk } from './game/talk';
 import { addRune, castShelf } from './game/magic';
 import { discPlayer } from './game/player';
 import { Renderer, LIGHTS } from './render/renderer';
-import { cacheClear, cacheGet, cachePut } from './storage/kv';
+import { cacheClear, cacheGet, cachePut, kvGet, kvPut } from './storage/kv';
+import { AudioOut, type AudioPrefs } from './ui/audio';
+import { THEME, musicEnded } from './game/sound';
 import { Art } from './ui/art';
 import { Automap } from './ui/automap';
 import { CharGen } from './ui/chargen';
@@ -56,12 +58,24 @@ async function start(files: GameFiles): Promise<void> {
   game.ui = hud;
   const menus = new Menus(game), chargen = new CharGen(game, art), cuts = new CutsceneView(game, art);
   hud.cuts = cuts;
+  // sound: effects and music; the Options card turns each on or off (remembered in this browser)
+  const audio = new AudioOut(files);
+  hud.audio = audio;
+  audio.onMusicEnd = () => musicEnded(game);
+  cuts.onMusic = n => audio.music(n, true);
+  cuts.onMusicDone = () => { if (game.music.hold) audio.music(game.music.cur || THEME.intro, true); else game.music.cur = 0; };
+  const showPrefs = () => { $('#bMusic').textContent = `Music: ${audio.prefs.music ? 'on' : 'off'}`; $('#bSfx').textContent = `Sounds: ${audio.prefs.sfx ? 'on' : 'off'}`; };
+  const setPrefs = (p: AudioPrefs) => { audio.setPrefs(p); showPrefs(); void kvPut('prefs', p); };
+  void kvGet<Partial<AudioPrefs>>('prefs').then(p => { if (p) audio.setPrefs({ music: p.music !== false, sfx: p.sfx !== false }); showPrefs(); });
+  $('#bMusic').onclick = () => setPrefs({ ...audio.prefs, music: !audio.prefs.music });
+  $('#bSfx').onclick = () => setPrefs({ ...audio.prefs, sfx: !audio.prefs.sfx });
+  showPrefs();
   menus.onCreate = () => chargen.open();
   if (hasCutscenes(files)) menus.playCutscenes = ns => cuts.playAll(ns);
   hud.onVictory = () => void menus.showMain();
   hud.onDied = () => { controls.reset(); setTimeout(() => void menus.showMain(), 2500); };
   const map = new Automap(game, () => hud!.say(''));
-  const cycleLight = () => { renderer.lightIdx = (renderer.lightIdx + 1) % LIGHTS.length; $('#bLight').textContent = LIGHTS[renderer.lightIdx]![0]; };
+  const cycleLight = () => { renderer.lightIdx = renderer.lightIdx + 1 >= LIGHTS.length ? -1 : renderer.lightIdx + 1; $('#bLight').textContent = LIGHTS[renderer.lightIdx]?.[0] ?? 'Carried light'; };
   const closeText = () => ($('#scroll').hidden = true);
   const controls = new Controls(game, {
     toggleMap: () => map.toggle(), togglePanel: () => hud!.togglePanel(), cycleLight,
@@ -94,10 +108,12 @@ async function start(files: GameFiles): Promise<void> {
   $('#loader').hidden = true; $('#game').hidden = false;
   game.goLevel(0);
   game.setPlayer(discPlayer(D));
+  game.music.hold = true; // the title and the menu own the music until a game starts
   void cuts.playAll(STARTUP).then(() => menus.showMain()); // the title and the introduction; skipping goes to the menu
   if (!D.crit) hud.say('Creatures need the disc’s CRIT folder: choose Forget data in Options, then the disc image again.');
   else if (!D.models || !art.panels || !art.heads) hud.say('For real furniture, interface art and character creation, choose Forget data in Options, then your disc image again.');
   else if (!hasCutscenes(files)) hud.say('For the cutscenes, choose Forget data in Options, then your disc image again.');
+  else if (!hasSound(files)) hud.say('For sound and music, choose Forget data in Options, then your disc image again.');
 
   let last = performance.now();
   const frame = (now: number) => {

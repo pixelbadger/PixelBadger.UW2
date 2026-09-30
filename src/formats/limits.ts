@@ -47,4 +47,8 @@ export const LIMITS = {
   maxCutsCommands: 8192,
   /** Sample bytes in one VOC file (UW2's longest speech is a few hundred KB). */
   maxVocBytes: 16 << 20,
+  /** Timbres in one instrument bank (UW.OPL holds a few hundred at most: 128 melodic + percussion). */
+  maxTimbres: 1024,
+  /** Channel events in one XMI song (UW2's longest themes hold a few thousand). */
+  maxXmiEvents: 200_000,
 } as const;

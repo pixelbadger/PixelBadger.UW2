@@ -4,11 +4,13 @@ import { objX, objY } from '../world/constants';
 import { solidBlocks, supportAt } from '../world/collision';
 import { isDoorOpen, isSecretDoor } from '../world/doors';
 import type { Game } from './game';
-import { portable, type SlotKey } from './inventory';
+import { BAG, isContainer, portable, qty, type BagKey } from './inventory';
+import { closeInner, isLocked, placeHeld, receive, spill, takeFrom, usable, useItem, useOnThing, type Where } from './items';
 import { eye, pick, type Hit } from './picking';
 import { startTalk } from './talk';
 import { sleep } from './cutscenes';
-import { RUNE_BAG, addRune, isRuneStone, releasePending, runeName, stowRune } from './magic';
+import { releasePending } from './magic';
+import { SFX, sfxAt } from './sound';
 
 // The command modes (use, look, get, talk, fight) acting on what the Avatar points at.
 
@@ -44,10 +46,8 @@ export function use(game: Game, nx: number, ny: number, look = false): void {
   if (look && h.kind === 'door') { game.say(`You see ${nameOf(D, h.dr.id & ~8)}.`); return; }
   if (h.kind === 'door') {
     const d = h.dr;
-    if (isSecretDoor(d) && !isDoorOpen(d)) { d.id |= 8; game.say('You found a secret door.'); }
-    else { d.id ^= 8; game.say(isDoorOpen(d) ? 'The door opens.' : 'The door closes.'); }
-    game.refreshDynamic();
-    if (game.blocked(game.pose.x, game.pose.z, game.pose.y)) { d.id ^= 8; game.refreshDynamic(); game.say('Something is in the way.'); }
+    if (!isDoorOpen(d) && isLocked(d)) { game.say(`The ${nameOf(D, d.id & ~8).replace(/^(an?|the) /, '')} is locked.`); return; }
+    toggleDoor(game, d);
     return;
   }
   if (h.kind === 'surface') {
@@ -70,19 +70,47 @@ export function use(game: Game, nx: number, ny: number, look = false): void {
   if (sp.decal && (look || o.id === 0x166)) { if (!readWriting(game, o)) game.say(`You see ${nameOf(D, o.id)}.`); }
   else if (sp.decal && (o.id === 0x161 || o.id === 0x162)) {
     o.fl = (o.fl + 1) & 7; game.refreshDynamic();
+    sfxAt(game, SFX.button, o.tx + 0.5, o.ty + 0.5);
     game.say(`You ${o.id === 0x161 ? 'pull' : 'flip'} the ${nameOf(D, o.id).replace(/^an? /, '')}.`);
   } else if (sp.decal) {
     o.id ^= 8; game.refreshDynamic();
+    sfxAt(game, SFX.button, o.tx + 0.5, o.ty + 0.5);
     const n = nameOf(D, o.id & ~8).replace(/^an? /, '');
     game.say(n.includes('button') ? 'You press the button.' : `You ${n.includes('chain') ? 'pull' : 'flip'} the ${n}.`);
   } else if (!look && o.id === 0x167) { // a bed
     const E = eye(game);
     if (Math.hypot(sp.c[0] - E[0], sp.c[2] - E[2]) > 2.3) game.say(S1(D, 107) || 'You cannot reach that.');
     else void sleep(game);
+  } else if (!look && (isContainer(o.id) || WORLD_CONTAINERS.has(o.id))) {
+    const E = eye(game);
+    if (Math.hypot(sp.c[0] - E[0], sp.c[2] - E[2]) > 2.3) game.say(S1(D, 107) || 'You cannot reach that.');
+    else spill(game, o);
   } else describe(game, o);
 }
 
-/** Get: into the first free bag slot, or onto the cursor when the bag is full. */
+/** Barrels, chests and nightstands: furniture that holds things (the original's container.Use from the world). */
+const WORLD_CONTAINERS = new Set([0x15b, 0x15d, 0x15e]);
+
+/** Opens or closes a door (a secret one is found the first time), with its sound; a door that would close on the Avatar reopens. */
+export function toggleDoor(game: Game, d: ObjRec): void {
+  if (isSecretDoor(d) && !isDoorOpen(d)) { d.id |= 8; game.say('You found a secret door.'); }
+  else { d.id ^= 8; game.say(isDoorOpen(d) ? 'The door opens.' : 'The door closes.'); }
+  game.refreshDynamic();
+  if (game.blocked(game.pose.x, game.pose.z, game.pose.y)) { d.id ^= 8; game.refreshDynamic(); game.say('Something is in the way.'); return; }
+  sfxAt(game, (d.id & 7) === 6 ? SFX.portcullis : SFX.door, d.tx + (d.fx + 0.5) / 8, d.ty + (d.fy + 0.5) / 8);
+}
+
+/** A key or lockpick chosen from the inventory meets what the Avatar points at. */
+function applyUseOn(game: Game, nx: number, ny: number): void {
+  const tool = game.useOn!, h = pick(game, nx, ny);
+  game.useOn = null;
+  if (!game.inv.everything().includes(tool)) return;
+  if (h && h.kind === 'door') { useOnThing(game, tool, h.dr, true, isDoorOpen(h.dr), () => toggleDoor(game, h.dr)); game.ui.inventoryChanged(); return; }
+  if (h && h.kind === 'obj' && !h.sp.npc) { useOnThing(game, tool, h.sp.o, false, false, () => {}); return; }
+  game.say(S1(game.data, 166) || 'You cannot use that.');
+}
+
+/** Get: into the open container or the first free bag slot, or onto the cursor when there is no room. */
 export function tryGet(game: Game, h: Hit | null): void {
   const D = game.data, inv = game.inv;
   if (inv.held) { game.say(S1(D, 274) || 'There is no place to put that.'); return; }
@@ -92,13 +120,18 @@ export function tryGet(game: Game, h: Hit | null): void {
   const E = eye(game);
   if (Math.hypot(h.sp.c[0] - E[0], h.sp.c[1] - E[1], h.sp.c[2] - E[2]) > 2.3) { game.say(S1(D, 107) || 'You cannot reach that.'); return; }
   const objs = game.L.objs, at = objs.indexOf(o);
-  if (at >= 0) objs.splice(at, 1);
+  if (at < 0) return;
+  const got = receive(game, o);
+  if (got === 'heavy') { game.say(S1(D, 108) || 'That is too heavy for you to pick up.'); return; }
+  objs.splice(at, 1);
   game.refreshObjects();
-  if (stowRune(game, o.id)) return;
-  if (inv.stow(o)) game.say(`You put ${nameOf(D, o.id)} in your pack.`);
-  else { inv.held = o; game.say(`You hold ${nameOf(D, o.id)}.`); }
+  if (o.id >= 0xe8 && o.id < 0x100 && got === 'pack' && !inv.everything().includes(o)) game.say(`You put the ${nameOf(D, o.id).replace(/^(an?|the) /, '')} in your rune bag.`);
+  else if (got === 'pack') game.say(`You put ${qty(o) > 1 ? `${qty(o)} ${plural(D, o.id)}` : nameOf(D, o.id)} in your ${inv.container ? nameOf(D, inv.container.id).replace(/^(an?|the|some) /, '') : 'pack'}.`);
+  else game.say(`You hold ${nameOf(D, o.id)}.`);
   game.ui.inventoryChanged();
 }
+
+const plural = (D: Game['data'], id: number) => ((D.names[id] ?? '').split('&')[1] || nameOf(D, id) + 's').replace(/_/g, ' ').trim();
 
 /** Puts the held thing down where the Avatar points (within reach, on a floor or a prop top with room). */
 export function dropHeld(game: Game, nx: number, ny: number): void {
@@ -121,6 +154,7 @@ export function dropHeld(game: Game, nx: number, ny: number): void {
   o.z = Math.max(0, Math.min(127, Math.round(f * 32)));
   L.objs.push(o); game.inv.held = null;
   game.refreshObjects(); game.ui.inventoryChanged(); game.say('');
+  sfxAt(game, SFX.landing, X, Y, -0x20);
 }
 
 export function talkTo(game: Game, h: Hit | null): void {
@@ -132,6 +166,7 @@ export function talkTo(game: Game, h: Hit | null): void {
 export function act(game: Game, nx: number, ny: number): void {
   if (game.dead) return;
   if (game.magic.pending) { releasePending(game, nx, ny); return; }
+  if (game.useOn) { applyUseOn(game, nx, ny); return; }
   if (game.inv.held) { dropHeld(game, nx, ny); return; }
   if (game.mode === 'get') return tryGet(game, pick(game, nx, ny));
   if (game.mode === 'look') return use(game, nx, ny, true);
@@ -141,25 +176,24 @@ export function act(game: Game, nx: number, ny: number): void {
 }
 
 /**
- * A tap on a paperdoll/bag slot: swap with the cursor, or pick the item up (look mode describes it). A rune stone
- * dropped on the rune bag goes into it; in use mode a tap on the rune bag opens it (returns 'runes').
+ * A tap on an inventory place (a paperdoll or bag slot, or a place of the open container). With something on the
+ * cursor: put it there (into a container, onto a like stack, or swapped). Otherwise look describes; use mode uses what
+ * can be used (opens a container, eats, drinks, lights, readies a key or lockpick, drinks a potion, points a wand;
+ * returns 'runes' for the rune bag) and picks up anything else; the other modes, or `take` (a right-click or long
+ * press), pick it up (one of a stack with `one`). A key or lockpick waiting to be used is tried on the item's lock.
  */
-export function slotClick(game: Game, k: SlotKey): 'runes' | void {
-  const D = game.data, inv = game.inv, cur = inv.get(k);
-  if (inv.held && cur?.id === RUNE_BAG) {
-    const h = inv.held;
-    if (!isRuneStone(h.id)) { game.say(S1(D, 262) || 'You can only put runes in the rune bag.'); return; }
-    inv.held = null; addRune(game, h.id - 0xe8);
-    game.say(`You put the ${runeName(game, h.id - 0xe8)} rune in your rune bag.`);
-    game.ui.inventoryChanged();
-    return;
-  }
-  if (!inv.held && cur?.id === RUNE_BAG && game.mode === 'use') return 'runes';
-  if (inv.held) { inv.set(k, inv.held); inv.held = cur; game.say(cur ? `You now hold ${nameOf(D, cur.id)}.` : ''); }
-  else if (cur) {
-    if (game.mode === 'look') { describe(game, cur); return; }
-    inv.held = cur; inv.set(k, null);
-    game.say(`You hold ${nameOf(D, cur.id)}. Tap a slot, or point into the world to put it down.`);
-  }
-  game.ui.inventoryChanged();
+export function slotClick(game: Game, w: Where, o: { one?: boolean; take?: boolean } = {}): 'runes' | void {
+  const inv = game.inv;
+  if (inv.held) { placeHeld(game, w); return; }
+  const bag = 'bag' in w ? w.bag : BAG.indexOf(w.slot as BagKey);
+  const cur = bag >= 0 ? inv.bagAt(bag) : 'slot' in w ? inv.get(w.slot) : null;
+  if (!cur) return;
+  if (game.useOn) { const t = game.useOn; game.useOn = null; if (t !== cur) useOnThing(game, t, cur, false, false, () => {}); return; }
+  if (game.mode === 'look' && !o.take) { describe(game, cur); return; }
+  if (game.mode === 'use' && !o.take && usable(cur)) return useItem(game, cur, w);
+  const h = takeFrom(game, w, o.one);
+  if (h) game.say(`You hold ${qty(h) > 1 ? `${qty(h)} ${plural(game.data, h.id)}` : nameOf(game.data, h.id)}. Tap a slot, or point into the world to put it down.`);
 }
+
+/** The open container's picture: closes it (back to the bag, or to the container holding it). */
+export const closeContainer = (game: Game): void => closeInner(game);

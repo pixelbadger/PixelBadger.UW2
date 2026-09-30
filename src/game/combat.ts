@@ -7,6 +7,8 @@ import { MELEE_REACH, startAct, type Critter } from '../world/creatures';
 import type { Game } from './game';
 import { mkObj, npcInv } from './loot';
 import { status } from './magic';
+import { wornArmour } from './items';
+import { DEATH_SFX, SFX, combatBlow, sfx, sfxAt, wantTheme, THEME } from './sound';
 import { viewBasis } from './picking';
 import { SK, dice, gainExp, skill, skillCheck } from './rules';
 import { SPELLS } from './spells';
@@ -21,7 +23,8 @@ import { SPELLS } from './spells';
 //             cannot be killed; corpses (7 in 16), fluids and loot on death; missile damage and the missile skill.
 //   OURS      where the swing lands (a sphere ahead of the attacker, reach from the weapon's COMOBJ radius), charge
 //             timing (8 steps a second), creature decisions (4 a second), missile flight (straight, 7 tiles a second),
-//             hostility on sight, no weapon wear, no sounds, no blood splashes.
+//             hostility on sight, no weapon wear, no blood splashes. Sounds: the original's effect numbers (hurt,
+//             hit, whiff, bow, deaths by the creature's sound class), placed by src/game/sound.ts.
 
 /** Swing types, in OBJECTS.DAT's order: slash, bash, stab. */
 export type SwingType = 0 | 1 | 2;
@@ -52,7 +55,7 @@ const rangedDat = (game: Game, id: number): RangedDat => game.data.objDat.ranged
 /** A creature's record, or a plain stand-in (level from the object) without OBJECTS.DAT. */
 export function critDat(game: Game, id: number): CritterDat {
   if (game.data.hasObjDat) return game.data.objDat.critters[id & 63]!;
-  return { level: 2, toughness: [0, 0, 0, 0], avghit: 20, str: 10, dex: 10, int: 10, bleed: 1, fluids: 0, faction: 0, damagesWeapon: false, corpse: 0, flier: false, swimmer: false, speed: 0, poison: 0, baseHit: 8, defence: 8, attacks: [{ hit: 8, dmg: 4, prob: 100 }, { hit: 0, dmg: 0, prob: 0 }, { hit: 0, dmg: 0, prob: 0 }], sight: 5, hearing: 5, exp: 20, spells: [0, 0, 0], caster: false };
+  return { level: 2, toughness: [0, 0, 0, 0], avghit: 20, str: 10, dex: 10, int: 10, bleed: 1, fluids: 0, deathSound: 1, faction: 0, damagesWeapon: false, corpse: 0, flier: false, swimmer: false, speed: 0, poison: 0, baseHit: 8, defence: 8, attacks: [{ hit: 8, dmg: 4, prob: 100 }, { hit: 0, dmg: 0, prob: 0 }, { hit: 0, dmg: 0, prob: 0 }], sight: 5, hearing: 5, exp: 20, spells: [0, 0, 0], caster: false };
 }
 
 /** Height (tiles) of an object id from COMOBJ.DAT, or a fallback. */
@@ -71,7 +74,7 @@ function meleeWeapon(game: Game): number { const o = weaponInHand(game); return 
 /** The ammunition a launcher shoots, and the first stack of it carried. */
 function ammoFor(game: Game, launcher: number): { id: number; o: ObjRec | undefined } {
   const id = 0x10 + (rangedDat(game, launcher).type & 15);
-  return { id, o: game.inv.items().find(x => x.id === id) };
+  return { id, o: game.inv.everything().find(x => x.id === id && x !== game.inv.held) };
 }
 
 // ---------- the Avatar's swing: hold to draw back, release to strike ----------
@@ -149,7 +152,7 @@ function playerStrike(game: Game): void {
     const d = Math.hypot(c.x - px, c.y - py);
     if (d < bd) { bd = d; best = c; }
   }
-  if (!best) return;
+  if (!best) { sfx(game, SFX.whiff); return; }
   const st = status(game), sk = wd.skill >= 6 || wid === FIST ? SK.unarmed : wd.skill;
   const score = skill(pl, sk) + (skill(pl, SK.attack) >> 1) + Math.trunc(pl.dex / 7) + st.valour + (pl.diff === 1 ? 7 : 0);
   let dmg = sk === SK.unarmed ? 4 + Math.trunc(pl.str / 6) + Math.trunc((skill(pl, SK.unarmed) << 1) / 5) : Math.trunc(pl.str / 9) + [wd.slash, wd.bash, wd.stab][s.type]!;
@@ -161,7 +164,7 @@ function playerStrike(game: Game): void {
   const flank = flankBonus(best.ang, P.yaw);
   const r = skillCheck(game.rng, score + flank, cd.defence);
   if (r === 2) dmg *= (48 + randInt(game.rng, 30)) >> 5;
-  if (r <= 0) { provoke(game, best); return; }
+  if (r <= 0) { provoke(game, best); sfx(game, SFX.whiff); return; }
   finalDamage(game, null, best, dmg, charge, flank, part, 4);
 }
 
@@ -189,10 +192,12 @@ function finalDamage(game: Game, from: Critter | null, to: Critter | null, base:
     let a = t[part & 3]!;
     if (a === -1) a = t[0]!;
     fin = Math.max(0, fin - a);
+    if (!from) sfxAt(game, SFX.hit, to.x, to.y, Math.min(0x40, fin << 2) - 0x20); // the Avatar's blow or missile lands
     damageCritter(game, to, fin, type, !from);
   } else {
-    fin = Math.max(0, fin - status(game).armour[part & 3]!);
+    fin = Math.max(0, fin - status(game).armour[part & 3]! - wornArmour(game)[part & 3]!);
     if (game.stats?.diff === 1) fin >>= 1;
+    if (fin) sfx(game, SFX.hurt, Math.min(0x40, fin << 2) - 0x20);
     damagePlayer(game, fin, type);
   }
 }
@@ -208,7 +213,10 @@ export function damageCritter(game: Game, c: Critter, n: number, type: number, b
   if (!npc || c.dying) return;
   n = scaleDamage(game, game.data.comObj[c.o.id]!.resist, n, type);
   npc.hp = Math.max(0, npc.hp - n);
-  if (byPlayer) { provoke(game, c); game.ui.foeHealth(npc.hp, critDat(game, c.o.id).avghit || npc.hp || 1); }
+  if (byPlayer) {
+    const max = critDat(game, c.o.id).avghit || npc.hp || 1;
+    provoke(game, c); game.ui.foeHealth(npc.hp, max); combatBlow(game, false, npc.hp, max);
+  }
   if (npc.hp === 0) kill(game, c, byPlayer);
 }
 
@@ -220,9 +228,11 @@ function kill(game: Game, c: Critter, byPlayer: boolean): void {
   }
   c.dying = true; c.act = undefined;
   startAct(c, 7);
+  sfxAt(game, DEATH_SFX[cd.deathSound] ?? -1, c.x, c.y);
   if (byPlayer) {
     const e = cd.exp;
     game.say(`You have killed ${npc.who ? npcName(game.data, npc.who, c.o) : nameOf(game.data, c.o.id)}.`);
+    wantTheme(game, THEME.fanfare);
     gainExp(game, e + dice(game.rng, 2, e));
   }
 }
@@ -250,6 +260,7 @@ export function damagePlayer(game: Game, n: number, type: number): void {
   n = scaleDamage(game, game.data.comObj[127]!.resist | status(game).proof, n, type);
   if (!n) return;
   pl.vit[0] = Math.max(0, pl.vit[0] - n);
+  if (type !== 0x10) combatBlow(game, true, pl.vit[0], pl.vit[1]); // poison is not a fight
   game.ui.hurt(n);
   game.ui.playerChanged();
   if (pl.vit[0] <= 0) die(game);
@@ -330,7 +341,7 @@ export function npcStrike(game: Game, c: Critter, n: number): void {
   const score = a.hit + (cd.baseHit >> 1) - st.protect[part]!, flank = flankBonus(P.yaw, c.ang);
   let d = dmg;
   const r = skillCheck(game.rng, score + flank, skill(pl, SK.defense));
-  if (r <= 0) return;
+  if (r <= 0) { sfxAt(game, SFX.whiff, c.x, c.y); return; }
   if (r === 2) d *= (48 + randInt(game.rng, 30)) >> 5;
   finalDamage(game, c, null, d, charge, flank, part, 4);
   if (cd.poison && game.poison < cd.poison && randInt(game.rng, 6 + cd.poison) > st.armour[part]! && scaleDamage(game, game.data.comObj[127]!.resist | st.proof, 1, 0x10)) game.poison = cd.poison;
@@ -365,6 +376,7 @@ function shoot(game: Game, launcher: number, aim: [number, number]): void {
   if (a.o.isq && a.o.link > 1 && a.o.link < 0x200) a.o.link--;
   else game.inv.remove(a.o);
   game.ui.inventoryChanged();
+  sfx(game, SFX.bow);
   playerLaunch(game, a.id, aim);
 }
 

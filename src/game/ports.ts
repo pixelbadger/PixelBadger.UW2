@@ -54,6 +54,10 @@ export interface UiPort {
   hurt(n: number): void;
   /** The Avatar died. */
   died(): void;
+  /** A sound effect (SOUNDS.DAT number) at volume 0-127 and pan 0-127 (0 right, 0x40 centre, 0x7F left). */
+  sound(id: number, vol: number, pan: number): void;
+  /** Plays music theme n (UWAnn.XMI; 0 stops); loop or play once (then the page calls musicEnded). */
+  music(theme: number, loop: boolean): void;
   talk: TalkView;
 }
 
@@ -62,5 +66,5 @@ export type CutsceneEnd = 'done' | 'skipped';
 export const nullTalkView = (): TalkView => ({ open() {}, close() {}, setTalker() {}, line() {}, prompt() {}, trade() {} });
 export const nullUi = (): UiPort => ({
   say() {}, levelChanged() {}, inventoryChanged() {}, playerChanged() {}, showText() {}, releasePointer() {},
-  cutscene: () => Promise.resolve('done'), victory() {}, magicChanged() {}, foeHealth() {}, hurt() {}, died() {}, talk: nullTalkView(),
+  cutscene: () => Promise.resolve('done'), victory() {}, magicChanged() {}, foeHealth() {}, hurt() {}, died() {}, sound() {}, music() {}, talk: nullTalkView(),
 });

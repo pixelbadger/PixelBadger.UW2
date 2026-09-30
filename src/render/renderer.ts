@@ -1,6 +1,7 @@
 import type { GameData } from '../data/gamedata';
 import type { Game } from '../game/game';
 import { magicLight } from '../game/magic';
+import { viewLight } from '../game/items';
 import { eye, viewBasis } from '../game/picking';
 import { critterQuads } from '../world/creatures';
 import type { Level } from '../world/level';
@@ -9,6 +10,8 @@ import { FS, FS_ATLAS, VS_MODEL, VS_SPRITE, VS_WORLD } from './shaders';
 
 /** Light sources: name, light-table offset, distance falloff. */
 export const LIGHTS: [string, number, number][] = [['Candle', -1, 4.2], ['Torch', -2, 2.9], ['Lantern', -3, 2.1], ['Daylight', 0, 0.25]];
+/** No light at all (ours): a few steps of gloom. */
+export const DARK: [string, number, number] = ['Dark', 1, 7];
 
 type Program = WebGLProgram & { U: Record<string, WebGLUniformLocation | null> };
 
@@ -56,7 +59,8 @@ export class Renderer {
   private meshes: Record<'world' | 'fixed' | 'dynamic' | 'models' | 'dynModels' | 'sprites' | 'critters' | 'missiles', Mesh>;
   private critTex: WebGLTexture | null = null;
   private synced = { level: null as Level | null, world: -1, fixed: -1, dynamic: -1, sprites: -1, critters: -1 };
-  lightIdx = 2;
+  /** -1: see by what the Avatar carries, spells and the level's own light; 0-3: always at least that LIGHTS entry. */
+  lightIdx = -1;
   chunky = true;
 
   constructor(readonly canvas: HTMLCanvasElement, D: GameData) {
@@ -132,7 +136,7 @@ export class Renderer {
     const asp = w / h, fovY = asp >= 1 ? 1.05 : Math.min(1.9, 2 * Math.atan(Math.tan(0.62) / asp));
     game.view = { aspect: asp, fovY };
     const E = eye(game), { F, R, U } = viewBasis(P.yaw, P.pitch);
-    const VP = mul(perspective(fovY, asp, 0.03, 80), lookFrom(E, F, R, U)), Lt = LIGHTS[Math.max(this.lightIdx, magicLight(game))]!, M = this.meshes;
+    const VP = mul(perspective(fovY, asp, 0.03, 80), lookFrom(E, F, R, U)), li = this.lightIdx < 0 ? viewLight(game, magicLight(game)) : Math.max(this.lightIdx, magicLight(game)), Lt = LIGHTS[li] ?? DARK, M = this.meshes;
     const passes: [Program, Mesh, number, number][] = [[this.progW, M.world, 0, 0], [this.progW, M.fixed, 1, 0], [this.progW, M.dynamic, 1, 0], [this.progM, M.models, 0, 0], [this.progM, M.dynModels, 0, 0], [this.progS, M.sprites, 1, 0]];
     for (const [p, mesh, alpha, unit] of passes) this.draw(p, mesh, VP, E, Lt, alpha, unit, P.yaw);
     const a = game.atlas;

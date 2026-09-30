@@ -21,6 +21,9 @@ export interface PlayerStats {
   skills: number[];
   exp: number | null;
   level?: number;
+  /** Hunger 0 (starving) - 255 (satiated); 0xC0 when missing. Drink taken (intoxication). */
+  hunger?: number;
+  drunk?: number;
   /** The disc's PLAYER.DAT template rather than a created character. */
   disc?: boolean;
 }

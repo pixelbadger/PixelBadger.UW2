@@ -7,6 +7,20 @@ import type { Game } from './game';
 import { mkObj } from './loot';
 import { pick } from './picking';
 import { SK, dice, heal, levelOf, restoreMana, skill, skillCheck } from './rules';
+import { SFX, sfx } from './sound';
+import { burnLights, hungerTick } from './items';
+
+/** The sound of a spell cast (the original's GetSpellSFX for UW2), or -1. */
+export function spellSfx(major: number, minor: number): number {
+  switch (major) {
+    case 0: case 3: return SFX.spellRing1;
+    case 2: return SFX.spellRing3;
+    case 5: return -1;
+    case 6: return minor === 0x81 ? SFX.spellRing1 : SFX.spellRing2;
+    case 7: return [0, 2, 6, 8].includes(minor) ? SFX.spellRing2 : SFX.spellRing1;
+    default: return major === 8 && minor === 5 ? SFX.spellOther : SFX.spell;
+  }
+}
 
 // Runic magic, after UnderworldGodot (runicmagic.cs, spellcasting*.cs, playerdatloop.cs), traced from UW2.EXE.
 //   Runes: 24 (An .. Ylem), known once a rune stone (0xE8 + rune) goes into the rune bag (0x8F). Up to three sit on the
@@ -82,7 +96,7 @@ export function castShelf(game: Game): void {
   const pl = game.stats, m = game.magic, D = game.data;
   if (!pl || game.dead || game.talk) return;
   if (!m.shelf.length) { game.say('Choose runes from your rune bag first.'); return; }
-  if (game.minutes < m.ready) { game.say(S1(D, 11) || 'You are not ready to cast another spell yet.'); return; }
+  if (game.minutes < m.ready) { sfx(game, SFX.notReady); game.say(S1(D, 11) || 'You are not ready to cast another spell yet.'); return; }
   const i = shelfSpell(m.shelf);
   if (i < 0) { game.say('Not a spell.'); return; }
   const [major, minor] = SPELLS[i]!, c = circleOf(i), cost = c * 3, name = spellName(game, i);
@@ -92,8 +106,9 @@ export function castShelf(game: Game): void {
   if (!isBuilt(major, minor)) { game.say(`${cap(name)}: this spell is not built yet.`); return; }
   const r = skillCheck(game.rng, skill(pl, SK.casting), c * 3);
   if (r !== 0) m.ready = game.minutes + ((((c << 1) - levelOf(pl)) << 2) + 0x80 & 255) / 64; // ours: the original's delay byte read as 1/64 s
-  if (r === 0) { game.say(S1(D, 227) || 'The incantation failed.'); return; }
-  if (r === -1) { curse(game, c >> 1); spend(game, cost); game.say(S1(D, 229) || 'The spell backfires.'); return; }
+  if (r === 0) { sfx(game, SFX.fizzle); game.say(S1(D, 227) || 'The incantation failed.'); return; }
+  if (r === -1) { sfx(game, SFX.fail); curse(game, c >> 1); spend(game, cost); game.say(S1(D, 229) || 'The spell backfires.'); return; }
+  sfx(game, spellSfx(major, minor));
   castSpell(game, major, minor, cost, name);
 }
 
@@ -245,17 +260,18 @@ export function tickTimers(game: Game, dt: number): void {
     const pl = game.stats;
     if (!pl || game.dead) continue;
     if (T.n % 3 === 0) {
+      burnLights(game);
       if (game.poison > 0) damagePlayer(game, game.poison--, 0x10);
       const r = skillCheck(game.rng, skill(pl, SK.mana), 10);
       if (r > 0) restoreMana(game, -r);
     }
-    if (T.n % 30 === 0) { const r = skillCheck(game.rng, pl.str, 10); if (r > 0) heal(game, r); }
+    if (T.n % 30 === 0) { hungerTick(game); const r = skillCheck(game.rng, pl.str, 10); if (r > 0) heal(game, r); }
   }
 }
 
 /** Walking into a pickup: rune stones go straight into a carried rune bag. True when it took the stone. */
 export function stowRune(game: Game, id: number): boolean {
-  if (!isRuneStone(id) || !game.inv.all().some(o => o.id === RUNE_BAG)) return false;
+  if (!isRuneStone(id) || !game.inv.everything().some(o => o.id === RUNE_BAG)) return false;
   addRune(game, id - RUNE_STONE);
   game.say(`You put the ${runeName(game, id - RUNE_STONE)} rune in your rune bag.`);
   return true;
