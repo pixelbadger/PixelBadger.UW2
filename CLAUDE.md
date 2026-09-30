@@ -21,7 +21,7 @@ of Worlds. Not DOSBox, not a remake. Owner: Ben. Prefers direct engagement; ask 
 ## Architecture
 ```
 src/
-  formats/   pure parsers + writers (ark, compress, gr, rle, strings, critters, models, conv, iso, level, misc, cuts),
+  formats/   pure parsers + writers (ark, compress, gr, rle, strings, critters, models, conv, iso, level, misc, cuts, objdat),
              bytes.ts (bounds-checked reads, DataError), limits.ts (sanity limits). Node-importable.
   conv/vm.ts ConvVM: resumable conversation VM (seedable RNG via host.rng).
   cuts/      CutscenePlayer: runs a .N00 script in virtual time into a 320x200 indexed screen + palette + subtitle.
@@ -29,10 +29,13 @@ src/
   data/      files.ts (NEEDED/OPTIONAL, ISO/loose-file intake), gamedata.ts (GameData: decoded disc, texture
              array layout, lazy caches), text.ts (names, STRINGS helpers, OBJECTS/COMOBJ lookups).
   world/     Level (tiles, floorAt, mutable object lists), LevelScene (derived geometry, versioned parts),
-             props (furniture/models/decals + solids), doors, collision, creatures (sprites, stand-in AI), mesh.
+             props (furniture/models/decals + solids), doors, collision, creatures (sprites, stand-in AI with
+             attack/spell/death animations; combat rules reached via CritterCtx), mesh.
   game/      Game (the session object: all mutable state), movement, picking, interact (use/look/get/drop),
              inventory, talk + talkBuiltins + loot (conversation engine side, trading), saves, chargen rules,
-             player, cutscenes (when they play: startup, quest 143, dreams), ports (UiPort/TalkView interfaces).
+             player, cutscenes (when they play: startup, quest 143, dreams), ports (UiPort/TalkView interfaces),
+             rules (skills, dice, skill check, XP/levels), combat (swings, hits, damage, death, missiles),
+             magic + spells (runes, shelf, spell table, casting, effects, the 20-second clock).
   render/    Renderer (WebGL2; uploads scene parts only when their version changes), shaders, math.
   ui/        Hud (UiPort impl: messages, flasks, compass, panel), TalkPanel, Menus (menu/options/slots), CharGen,
              Automap, Controls, CutsceneView (canvas, FONTBIG subtitles, WebAudio speech), Art (disc UI art decoded
@@ -40,19 +43,21 @@ src/
   main.ts    boot: cache/pick -> GameData -> Game + Renderer + UI -> frame loop; window.__uw debug handle.
 ```
 **State.** `Game` owns everything mutable: `level`, `levelStates` (snapshots of levels left), `visited`, `pose`,
-`stats`, `inv`, `conv` (quests, clocks, NPC memory), `minutes`, `talk`, `mode`, `rng`. Systems are functions over a
+`stats`, `inv`, `conv` (quests, clocks, NPC memory), `minutes`, `talk`, `mode`, `rng`, `swing`, `missiles`, `poison`,
+`dead`, `magic` (runes, shelf, effects, pending spell), `timers`. Systems are functions over a
 `Game`. No module-level mutable globals.
 
 **Geometry split.** `LevelScene` parts: `world` (tiles, once per load), `fixed` (furniture, models, fixed decals,
 solids), `dynamic` (doors, levers, switches, buttons: `game.refreshDynamic()`), `sprites` (loose objects:
 `game.refreshObjects()`), creatures (per frame). Conversations that reshape things call `refreshAll()`.
 
-**Saves.** v1 = single-file engine format; v2 = current (`invis`/`items` split, no derived render data).
-Creature positions are not saved yet.
+**Saves.** v1 = single-file engine format; v2 = `invis`/`items` split, no derived render data; v3 = current (v2 +
+`magic` and `poison`). Creature hit points, hostility and deaths ride in the level snapshots; positions are not saved yet.
 
 ## Docs
 - docs/FORMATS.md: reverse-engineered formats + conversation VM spec (read before touching parsers/VM).
 - docs/CUTSCENES.md: cutscenes: what is built, where, what is approximated; then the research. docs/INTERFACE.md: UI approach.
+- docs/COMBAT.md: combat and magic: what follows the original (via UnderworldGodot's trace), what is ours, what is not built.
 - legacy/uw2-web-engine.html: the original single-file engine, for behaviour comparison.
 
 ## Testing
@@ -66,8 +71,8 @@ Real-data tests live in `tests/data` and run with `npm run test:data` (own confi
 ## CI/CD
 PRs into `main` must pass `.github/workflows/ci.yml` (typecheck, test, build). Merges to `main` run
 `deploy.yml`: CI again, then GitHub Pages. The `data-tests` gate (the real-data suite; the disc is downloaded from the
-repository secret `UW2_DATA_URL`, optionally pinned by the variable `UW2_DATA_SHA256`, and cached) is **disabled**
-(`if: false`, not in deploy's `needs`) until a disc source is set up. Vite `base: './'` so the site works under `/<repo>/`.
+repository secret `UW2_DATA_URL`, optionally pinned by the variable `UW2_DATA_SHA256`, and cached) is **on**: deploy
+needs it, so without the secret deploys are blocked. Vite `base: './'` so the site works under `/<repo>/`.
 
 ## TODO (priority order)
 Tests still to write:
@@ -75,11 +80,13 @@ Tests still to write:
 - [ ] Data-gated harness (`tests/data`, env `UW2_DATA`; the loader and the deploy gate exist): all 102 CNV programs
       x first/last/random/typed "xyzzy", assert no VM error / bad string / leftover `@`; snapshot globals + quests.
 - [ ] Browser smoke test (Playwright + synthetic ISO via `writeIso`): boot, walk, talk, save/load.
-Engine (feedback priority): combat -> item use/equipment/containers (weight, armour, keys, food, lights, bag depth)
--> trigger chains (links into traps 0x180-0x19f, use/pressure triggers, damage) -> runes/spells -> creature
-death/state persistence + real AI -> water/lava -> music (XMI, cutscene command 25) and sound effects -> fidelity
-polish (gouraud nodes, portcullis, compass north, furniture textures).
+Engine (feedback priority): confirm combat and magic by play on the real disc (docs/COMBAT.md lists what is
+approximated) -> item use/equipment/containers (weight, armour slots feeding combat, keys, food, lights, bag depth)
+-> trigger chains (links into traps 0x180-0x19f, use/pressure triggers, damage) -> the rest of the spells (area,
+targeted, summoning, class 11/13) + skill points for trainers -> creature positions in saves + real AI (pathfinding,
+morale) -> water/lava -> music (XMI, cutscene command 25) and sound effects -> fidelity polish (gouraud nodes,
+portcullis, compass north, furniture textures).
 Cutscenes: confirm quest 143 and the dream rules by play; small-window cutscenes (0x100+, death skulls); a victory
 screen; the original's sleep messages and what sleep does (healing, time). Real chargen rules (CHRGEN.DAT) when convenient, not blocking.
-Also open from before: conversation arena fights (babl_hack 0/1/2/4) need combat; ring slots for babl_hack 10;
+Also open from before: conversation arena fights (babl_hack 0/1/2/4: combat exists now, the pit state does not); ring slots for babl_hack 10;
 confirm set_sequence and teleport_player x/y by play; automap fidelity; importing original SAVEn dirs.

@@ -3,6 +3,7 @@ import type { Game, Mode } from '../game/game';
 import { slotClick } from '../game/interact';
 import type { SlotKey } from '../game/inventory';
 import type { CutsceneEnd, TalkView, UiPort } from '../game/ports';
+import { RUNE_STONE, cancelEffect, castShelf, clearShelf, runeName, selectRune } from '../game/magic';
 import type { Art } from './art';
 import type { CutsceneView } from './cutscene';
 import { $, el, releasePointer } from './dom';
@@ -13,6 +14,10 @@ import { $, el, releasePointer } from './dom';
 
 const CMDS: [Mode | 'options', string][] = [['options', 'Options'], ['talk', 'Talk'], ['get', 'Get'], ['look', 'Look'], ['fight', 'Fight'], ['use', 'Use']];
 /** Paperdoll/bag slot centres on PANELS.GR 0 (panel pixels). */
+/** Rune places on PANELS.GR 1 (panel pixels; after UnderworldGodot's layout of the same art), 4 across, 6 down; and the "put runes away" strip. */
+const RUNE_X = [15.5, 32.1, 49.3, 65.7], RUNE_Y = [12.8, 27.5, 42.1, 56.8, 71.5, 86.5], RUNES_AWAY = { x0: 20, x1: 60.5, y0: 92.4, y1: 108.1 };
+/** SPELLS.GR icon for an effect: base by major class (UW2's table from the executable; -1 means minor - 1), + minor. */
+const SPELL_ICON = [0x14, -1, 0x13, 0x05, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x11, 0x80, 0x80, 0x80, 0x80];
 const SLOTS: [SlotKey, number, number][] = [['shl', 16.5, 12.5], ['shr', 64.5, 12.5], ['hl', 12.5, 35], ['hr', 68, 35],
   ...[12.5, 31, 50, 68].map((x, i): [SlotKey, number, number] => [('b' + i) as SlotKey, x, 80.5]), ...[12.5, 31, 50, 68].map((x, i): [SlotKey, number, number] => [('b' + (i + 4)) as SlotKey, x, 99.5])];
 
@@ -26,7 +31,12 @@ export class Hud implements UiPort {
   ps = 3;
   onOptions: () => void = () => {};
   onVictory: () => void = () => {};
+  onDied: () => void = () => {};
   cuts: CutsceneView | null = null;
+  /** The eyes: frame shown, frame heading for, seconds since the last blow, step timer. Power gem frame drawn. */
+  private eye = { cur: 0, to: 0, since: 0, step: 0 };
+  private powerK = -1;
+  private hurtTimer = 0;
 
   constructor(private readonly game: Game, private readonly art: Art, readonly talk: TalkView) {}
 
@@ -51,6 +61,24 @@ export class Hud implements UiPort {
   releasePointer(): void { releasePointer(); }
   cutscene(n: number): Promise<CutsceneEnd> { return this.cuts ? this.cuts.play(n) : Promise.resolve('done'); }
   victory(): void { this.onVictory(); }
+  magicChanged(): void {
+    this.drawShelf(); this.drawSpells();
+    if (this.panelPage === 2) this.drawPanel();
+    $('#crosshair').classList.toggle('aim', !!this.game.magic.pending);
+  }
+  /** The original's eyes: frames 5-7 as the foe weakens; they close again 10 seconds after the last blow. */
+  foeHealth(hp: number, max: number): void {
+    const n = this.art.eyes?.length ?? 0;
+    this.eye.to = Math.min(n - 1, 4 + 3 - Math.min(2, Math.trunc((hp * 3) / Math.max(1, max))));
+    this.eye.since = 0;
+  }
+  hurt(n: number): void {
+    const h = $('#hurt');
+    h.style.opacity = String(Math.min(0.55, 0.15 + n / 30));
+    clearTimeout(this.hurtTimer);
+    this.hurtTimer = window.setTimeout(() => (h.style.opacity = '0'), 120);
+  }
+  died(): void { releasePointer(); this.onDied(); }
 
   // ---------- set-up ----------
   init(): void {
@@ -73,8 +101,13 @@ export class Hud implements UiPort {
     this.setMode('use');
     this.layout(); this.updateHeld(); this.drawPanel(); this.drawFlasks();
     $('#bBag').onclick = () => this.togglePanel();
-    $('#chain').onclick = () => { this.panelPage ^= 1; this.drawPanel(); };
+    $('#chain').onclick = () => { this.panelPage = this.panelPage === 0 ? 1 : 0; this.drawPanel(); };
     $('#pcv').addEventListener('pointerdown', e => this.panelClick(e));
+    $('#shelf').onclick = () => castShelf(this.game);
+    $('#spells').querySelectorAll('canvas').forEach((c, k) => ((c as HTMLCanvasElement).onclick = () => { if (this.game.mode === 'look') this.say('A spell is at work on you.'); else cancelEffect(this.game, k); }));
+    this.drawShelf(); this.drawSpells();
+    const e0 = this.art.eyes?.[0];
+    if (e0) { const c = $<HTMLCanvasElement>('#eyes'); c.width = e0.w; c.height = e0.h; c.getContext('2d')!.drawImage(this.art.canvas(e0), 0, 0); }
     $('#compass').onclick = () => { const d = S1(this.game.data, 40 + ((Math.round(this.game.pose.yaw / (Math.PI / 4)) % 8) + 8) % 8); this.say(d ? `You are facing ${d.replace(/^to the /, '').toLowerCase()}.` : ''); };
     addEventListener('resize', () => this.layout());
   }
@@ -88,7 +121,7 @@ export class Hud implements UiPort {
       const im = b.querySelector('img');
       if (im && A.lfti) im.src = A.url(A.lfti[i * 2 + (on ? 1 : 0)]);
     });
-    if (k !== 'use') this.say({ look: 'Look: click something to examine it.', get: 'Get: click something to pick it up.', talk: 'Talk: click someone to speak with them.', fight: 'Fight.' }[k] ?? '');
+    if (k !== 'use') this.say({ look: 'Look: click something to examine it.', get: 'Get: click something to pick it up.', talk: 'Talk: click someone to speak with them.', fight: 'Fight: hold to draw back, let go to strike (high bashes, middle slashes, low stabs).' }[k] ?? '');
   }
 
   layout(): void {
@@ -105,6 +138,11 @@ export class Hud implements UiPort {
     $('#pcv').style.width = 79 * ps + 'px'; this.ps = ps;
     if (A.chains) $('#chain img').style.width = 15 * ps * 0.8 + 'px'; // without CHAINS.GR the chain is a text button
     $('#held').style.width = 16 * u + 'px';
+    $('#shelf').querySelectorAll('canvas').forEach(c => ((c as HTMLElement).style.width = 16 * u + 'px'));
+    $('#spells').querySelectorAll('canvas').forEach(c => ((c as HTMLElement).style.width = 16 * u + 'px'));
+    const pw = A.power?.[0], ey = A.eyes?.[0];
+    $('#power').style.width = pw ? pw.w * u + 'px' : ''; $('#power').hidden = !pw;
+    $('#eyes').style.width = ey ? ey.w * u + 'px' : ''; $('#eyes').hidden = !ey;
   }
 
   // ---------- flasks, compass, cursor ----------
@@ -160,6 +198,7 @@ export class Hud implements UiPort {
       for (const [k, sx, sy] of SLOTS) { const o = this.game.inv.get(k), c = o ? A.icon(o.id) : null; if (c) x.drawImage(c, Math.round(sx - c.width / 2), Math.round(sy - c.height / 2)); }
       return;
     }
+    if (this.panelPage === 2) { this.drawRunes(x); return; }
     if (A.panels?.[2]) x.drawImage(A.canvas(A.panels[2]), 0, 0); else { x.fillStyle = '#2a2620'; x.fillRect(0, 0, 79, 112); }
     const v = A.ink;
     if (!pl) return;
@@ -178,9 +217,84 @@ export class Hud implements UiPort {
   private panelClick(e: PointerEvent): void {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect(), px = ((e.clientX - r.left) / r.width) * 79, py = ((e.clientY - r.top) / r.height) * 112;
     e.preventDefault();
+    if (this.panelPage === 2) { this.runeClick(px, py); return; }
     if (this.panelPage === 1) { if (py > 101) { this.skillPage = Math.max(0, this.skillPage + (px < 39 ? -1 : 1)); this.drawPanel(); } return; }
     const sl = SLOTS.find(([, sx, sy]) => Math.hypot(sx - px, sy - py) < 9);
-    if (sl) slotClick(this.game, sl[0]);
+    if (sl && slotClick(this.game, sl[0]) === 'runes') this.openRunes();
+  }
+
+  // ---------- magic: the rune bag (PANELS 1), the shelf, active spells ----------
+  /** Shows the rune bag in the panel. */
+  openRunes(): void { this.panelPage = 2; $('#panel').hidden = false; releasePointer(); this.drawPanel(); }
+
+  private drawRunes(x: CanvasRenderingContext2D): void {
+    const A = this.art, m = this.game.magic;
+    if (A.panels?.[1]) x.drawImage(A.canvas(A.panels[1]), 0, 0);
+    else { x.fillStyle = '#2a2620'; x.fillRect(0, 0, 79, 112); A.text(x, 'Put runes away', 39.5, 98, A.ink || 15, 'center'); }
+    for (let r = 0; r < 24; r++) {
+      const c = m.runes[r] ? A.icon(RUNE_STONE + r) : null;
+      if (c) x.drawImage(c, Math.round(RUNE_X[r & 3]! - c.width / 2), Math.round(RUNE_Y[r >> 2]! - c.height / 2));
+    }
+  }
+
+  private runeClick(px: number, py: number): void {
+    const g = this.game, R = RUNES_AWAY;
+    if (px >= R.x0 && px <= R.x1 && py >= R.y0 && py <= R.y1) { this.panelPage = 0; this.drawPanel(); return; }
+    const col = RUNE_X.findIndex(cx => Math.abs(cx - px) < 8.3), row = RUNE_Y.findIndex(cy => Math.abs(cy - py) < 7.5);
+    if (col < 0 || row < 0) { clearShelf(g); return; }
+    const r = row * 4 + col;
+    if (!g.magic.runes[r]) return;
+    if (g.mode === 'look') this.say(`${runeName(g, r)}.`);
+    else selectRune(g, r);
+  }
+
+  private drawShelf(): void {
+    const m = this.game.magic;
+    $('#shelf').querySelectorAll('canvas').forEach((cv, k) => {
+      const c = cv as HTMLCanvasElement, r = m.shelf[k], ic = r != null ? this.art.icon(RUNE_STONE + r) : null, x = c.getContext('2d')!;
+      c.width = ic?.width ?? 16; c.height = ic?.height ?? 16;
+      x.clearRect(0, 0, c.width, c.height);
+      if (ic) x.drawImage(ic, 0, 0);
+    });
+    $('#shelf').hidden = !m.runes.some(Boolean);
+    $('#shelf').title = m.pending ? `${m.pending.name}: point where to cast it` : 'Cast the spell on the shelf (C)';
+  }
+
+  private drawSpells(): void {
+    const A = this.art, fx = this.game.magic.effects;
+    $('#spells').querySelectorAll('canvas').forEach((cv, k) => {
+      const c = cv as HTMLCanvasElement, e = fx[k];
+      c.hidden = !e;
+      if (!e) return;
+      const base = SPELL_ICON[e.major] ?? 0x80, i = base < 0 ? e.minor - 1 : base + e.minor, im = i < 0x80 ? A.spells?.[i] : null;
+      const x = c.getContext('2d')!;
+      c.width = im?.w ?? 16; c.height = im?.h ?? 16;
+      x.clearRect(0, 0, c.width, c.height);
+      if (im) x.drawImage(A.canvas(im), 0, 0); else { x.fillStyle = '#e7a93b'; x.beginPath(); x.arc(8, 8, 5, 0, 7); x.fill(); }
+      c.title = 'A spell at work (tap to end it)';
+    });
+  }
+
+  /** Per frame: the power gem follows the swing's charge; the eyes step toward their target. */
+  tick(dt: number): void {
+    const A = this.art, s = this.game.swing;
+    if (A.power) {
+      const k = s.stage === 'charging' ? (s.charge >= 100 ? 9 + (Math.floor(performance.now() / 150) & 1) : Math.min(9, 1 + Math.trunc(s.charge / 12))) : 0;
+      const im = A.power[Math.min(k, A.power.length - 1)];
+      if (k !== this.powerK && im) { this.powerK = k; const c = $<HTMLCanvasElement>('#power'); c.width = im.w; c.height = im.h; c.getContext('2d')!.drawImage(A.canvas(im), 0, 0); }
+    }
+    const E = this.eye;
+    E.since += dt; E.step += dt;
+    if (E.since >= 10) E.to = 0;
+    if (A.eyes && E.step > 0.2) {
+      E.step = 0;
+      if (E.cur !== E.to) {
+        E.cur += E.cur < E.to ? 1 : -1;
+        const im = A.eyes[E.cur];
+        const c = $<HTMLCanvasElement>('#eyes');
+        if (im) { c.width = im.w; c.height = im.h; c.getContext('2d')!.drawImage(A.canvas(im), 0, 0); }
+      }
+    }
   }
 }
 

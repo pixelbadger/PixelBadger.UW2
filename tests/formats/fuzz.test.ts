@@ -2,7 +2,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
   DataError, LEVEL_BYTES, LIMITS, decodeLevel, readArk, readConv, readCritPage, readGR, readModels, readStrings, rleDecode,
-  uw2CompressLiteral, uw2Decompress, writeArk, writeGR, writeStrings,
+  uw2CompressLiteral, uw2Decompress, writeArk, writeGR, writeStrings, readObjectsDat, readComObj,
   CUTS_ARGS, readCutsScript, readLpf, readVoc, writeCutsScript, writeLpf, writeVoc,
 } from '../../src/formats';
 import { CutscenePlayer } from '../../src/cuts/player';
@@ -237,5 +237,16 @@ describe('cutscene data', () => {
       expect(p.done).toBe(true);
       expect(p.screen.length).toBe(64000);
     }), { numRuns: 120 });
+  });
+});
+
+describe('OBJECTS.DAT and COMOBJ.DAT', () => {
+  it('decode any bytes into fixed-size tables without throwing', () => {
+    fc.assert(fc.property(bytes(4096), b => {
+      const o = readObjectsDat(b), c = readComObj(b);
+      expect([o.weapons.length, o.ranged.length, o.armour.length, o.critters.length, c.length]).toEqual([16, 16, 32, 64, 512]);
+      for (const k of o.critters) { expect(k.attacks).toHaveLength(3); k.toughness.forEach(t => expect(t).toBeGreaterThanOrEqual(-128)); }
+      for (const r of c) { expect(r.radius).toBeLessThan(8); expect(r.mass).toBeLessThan(4096); }
+    }), RUNS);
   });
 });

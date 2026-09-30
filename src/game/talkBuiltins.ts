@@ -3,6 +3,7 @@ import type { ConvVM } from '../conv/vm';
 import { critByte, itemName, qtyOf, skillNo } from '../data/text';
 import { WORN } from './inventory';
 import { mkObj, npcInv } from './loot';
+import { gainExp } from './rules';
 import type { TalkSession } from './talk';
 import { TRADE_SLOTS } from './talk';
 
@@ -46,7 +47,7 @@ export function convBuiltin(C: TalkSession, name: string, v: number[], ptrs: num
       return 1;
     }
     // --- the Avatar ---
-    case 'x_exp': if (PL) PL.exp = (PL.exp || 0) + v[0]!; return (PL?.exp ?? 0) >> 4;
+    case 'x_exp': gainExp(game, v[0]!); return (PL?.exp ?? 0) >> 4; // halved and levelled as any other experience (the original's ChangeExperience)
     case 'x_skills': { // (value | 10000 raise | >10000 train, skill)
       const k = v[1]!, nv = v[0]!;
       if (!PL || k < 0 || k >= PL.skills.length) return 0;

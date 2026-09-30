@@ -2,8 +2,8 @@ import { DataError, isoExtract } from '../formats';
 
 /** Files the engine cannot run without (UW2/DATA). */
 export const NEEDED = ['LEV.ARK', 'T64.TR', 'PALS.DAT', 'LIGHT.DAT', 'OBJECTS.GR', 'ALLPALS.DAT', 'DOORS.GR', 'STRINGS.PAK'] as const;
-/** Files that add features when present: switches, 3D models, interface art, conversations + portraits, cutscenes. */
-export const OPTIONAL = ['HEADS.GR', 'SKILLS.DAT', 'TMFLAT.GR', 'TMOBJ.GR', 'PANELS.GR', 'BODIES.GR', 'FLASKS.GR', 'COMPASS.GR', 'LFTI.GR', 'CHAINS.GR', 'CHRBTNS.GR', 'SCRLEDGE.GR', 'PLAYER.DAT', 'FONT5X6P.SYS', 'UW2.EXE', 'CNV.ARK', 'BABGLOBS.DAT', 'CHARHEAD.GR', 'GENHEAD.GR', 'OBJECTS.DAT', 'COMOBJ.DAT', 'FONTBIG.SYS', 'BYT.ARK'] as const;
+/** Files that add features when present: switches, 3D models, interface art (incl. the combat power gem, the eyes and spell icons), conversations + portraits, cutscenes. */
+export const OPTIONAL = ['HEADS.GR', 'SKILLS.DAT', 'TMFLAT.GR', 'TMOBJ.GR', 'PANELS.GR', 'BODIES.GR', 'FLASKS.GR', 'COMPASS.GR', 'LFTI.GR', 'CHAINS.GR', 'CHRBTNS.GR', 'SCRLEDGE.GR', 'PLAYER.DAT', 'FONT5X6P.SYS', 'UW2.EXE', 'CNV.ARK', 'BABGLOBS.DAT', 'CHARHEAD.GR', 'GENHEAD.GR', 'OBJECTS.DAT', 'COMOBJ.DAT', 'FONTBIG.SYS', 'BYT.ARK', 'POWER.GR', 'EYES.GR', 'SPELLS.GR'] as const;
 
 /** Extracted game files by name; creature files are keyed "CRIT/<name>", cutscenes "CUTS/<name>", speech "SOUND/<name>". */
 export type GameFiles = Record<string, Uint8Array>;

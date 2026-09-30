@@ -1,6 +1,6 @@
 import {
-  DataError, LIMITS, keepLargestBlob, need, readArk, readConv, readGR, readModels, readStrings, u16, u32,
-  type ConvProgram, type Img, type Model, type StringBlocks,
+  DataError, LIMITS, keepLargestBlob, need, readArk, readComObj, readConv, readGR, readModels, readObjectsDat, readStrings, u16, u32,
+  type ComObj, type ConvProgram, type Img, type Model, type ObjectsDat, type StringBlocks,
 } from '../formats';
 import type { GameFiles } from './files';
 
@@ -40,6 +40,8 @@ export class GameData {
   /** Lazy caches (derived data). */
   readonly cache = { grids: new Map<number, unknown>(), critSets: new Map<number, unknown>() };
   private convs: (ConvProgram | null)[] | null | undefined;
+  private od: ObjectsDat | undefined;
+  private co: ComObj[] | undefined;
 
   constructor(files: GameFiles) {
     this.files = files;
@@ -100,6 +102,12 @@ export class GameData {
     }
     return this.convs;
   }
+
+  /** OBJECTS.DAT's weapon, missile, armour and creature tables (all zeros without the file: see hasObjDat). */
+  get objDat(): ObjectsDat { return (this.od ??= readObjectsDat(this.files['OBJECTS.DAT'] ?? new Uint8Array(0))); }
+  /** COMOBJ.DAT per object id (all zeros without the file). */
+  get comObj(): ComObj[] { return (this.co ??= readComObj(this.files['COMOBJ.DAT'] ?? new Uint8Array(0))); }
+  get hasObjDat(): boolean { return !!this.files['OBJECTS.DAT']; }
 
   /** A STRINGS.PAK string ('' when missing). */
   str(block: number, i: number): string { return (this.STR.get(block) ?? [])[i] ?? ''; }

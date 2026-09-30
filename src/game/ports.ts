@@ -46,6 +46,14 @@ export interface UiPort {
   cutscene(n: number): Promise<CutsceneEnd>;
   /** The game is won (after the ending). */
   victory(): void;
+  /** Runes, the shelf, lasting effects or a spell waiting to be aimed changed. */
+  magicChanged(): void;
+  /** The Avatar struck a creature: its health now (the original's eyes). */
+  foeHealth(hp: number, max: number): void;
+  /** The Avatar took n damage. */
+  hurt(n: number): void;
+  /** The Avatar died. */
+  died(): void;
   talk: TalkView;
 }
 
@@ -54,5 +62,5 @@ export type CutsceneEnd = 'done' | 'skipped';
 export const nullTalkView = (): TalkView => ({ open() {}, close() {}, setTalker() {}, line() {}, prompt() {}, trade() {} });
 export const nullUi = (): UiPort => ({
   say() {}, levelChanged() {}, inventoryChanged() {}, playerChanged() {}, showText() {}, releasePointer() {},
-  cutscene: () => Promise.resolve('done'), victory() {}, talk: nullTalkView(),
+  cutscene: () => Promise.resolve('done'), victory() {}, magicChanged() {}, foeHealth() {}, hurt() {}, died() {}, talk: nullTalkView(),
 });

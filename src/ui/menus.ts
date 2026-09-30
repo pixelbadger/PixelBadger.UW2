@@ -66,7 +66,7 @@ export class Menus {
       body.replaceChildren(el('p', { className: 'keys' }, 'Choose a saved game.'), await slotList(this.game, false, () => ($('#menu').hidden = true)),
         el('button', { className: 'sbtn wide', onclick: () => this.showMain() }, 'Back'));
     });
-    add('Explore as the disc’s default character', () => { $('#menu').hidden = true; this.game.setPlayer(discPlayer(this.game.data)); });
+    add('Explore as the disc’s default character', () => { $('#menu').hidden = true; this.game.resetCombat(); this.game.setPlayer(discPlayer(this.game.data)); });
     body.append(st);
     $('#menu').hidden = false;
   }
