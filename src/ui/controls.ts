@@ -10,6 +10,8 @@ export interface ControlHooks {
   cycleLight(): void;
   closeOverlays(): void;
   talkKey(e: KeyboardEvent): void;
+  /** Keys for a showing cutscene; true when it took the key. */
+  cutsKey(e: KeyboardEvent): boolean;
 }
 
 /**
@@ -81,6 +83,7 @@ export class Controls {
 
   private keydown(e: KeyboardEvent): void {
     const game = this.game, h = this.hooks;
+    if (h.cutsKey(e)) { this.keys.clear(); return; }
     if (game.talk) { h.talkKey(e); return; }
     if (e.code === 'Escape') { h.closeOverlays(); return; }
     if ((e.target as HTMLElement).tagName === 'SELECT') return;

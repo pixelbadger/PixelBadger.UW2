@@ -31,6 +31,8 @@ export interface IsoWant {
   crit(name: string): string | null;
   /** Files directly in UW2/ to keep (the executable holds the furniture models). */
   root(name: string): string | null;
+  /** Other UW2/ folders (CUTS, SOUND) by name: which of their files to keep. */
+  sub?: Record<string, (name: string) => string | null>;
 }
 
 /** Pulls the wanted UW2/* files out of an ISO 9660 image. Throws DataError with a player-facing message. */
@@ -46,11 +48,15 @@ export function isoExtract(u8: Uint8Array, want: IsoWant): Record<string, Uint8A
   for (const e of isoList(u8, data.lba, data.size)) grab(e, want.data(e.name));
   if (crit) for (const e of isoList(u8, crit.lba, crit.size)) grab(e, want.crit(e.name));
   for (const e of sub) grab(e, want.root(e.name));
+  for (const d of sub) {
+    const keep = d.dir ? want.sub?.[d.name] : undefined;
+    if (keep) for (const e of isoList(u8, d.lba, d.size)) grab(e, keep(e.name));
+  }
   return files;
 }
 
-/** Builds a minimal ISO 9660 image holding UW2/DATA, UW2/CRIT and UW2/*: for tests and fixtures. */
-export function writeIso(tree: { data: Record<string, Uint8Array>; crit?: Record<string, Uint8Array>; root?: Record<string, Uint8Array> }): Uint8Array {
+/** Builds a minimal ISO 9660 image holding UW2/DATA, UW2/CRIT, other UW2/ folders and UW2/*: for tests and fixtures. */
+export function writeIso(tree: { data: Record<string, Uint8Array>; crit?: Record<string, Uint8Array>; root?: Record<string, Uint8Array>; sub?: Record<string, Record<string, Uint8Array>> }): Uint8Array {
   const sectors: Uint8Array[] = [];
   const alloc = (bytes: Uint8Array) => { const lba = 20 + sectors.reduce((a, s) => a + s.length / SECTOR, 0); const n = Math.max(1, Math.ceil(bytes.length / SECTOR)); const s = new Uint8Array(n * SECTOR); s.set(bytes); sectors.push(s); return lba; };
   const rec = (name: string, lba: number, size: number, dir: boolean) => {
@@ -63,8 +69,9 @@ export function writeIso(tree: { data: Record<string, Uint8Array>; crit?: Record
   const dirOf = (entries: Uint8Array[]) => { const size = entries.reduce((a, e) => a + e.length, 0); const b = new Uint8Array(Math.max(SECTOR, size)); let p = 0; for (const e of entries) { b.set(e, p); p += e.length; } return b; };
   const filesDir = (files: Record<string, Uint8Array>) => { const recs = Object.entries(files).map(([n, b]) => rec(n, alloc(b), b.length, false)); const d = dirOf(recs); return { lba: alloc(d), size: d.length }; };
   const data = filesDir(tree.data), crit = filesDir(tree.crit ?? {});
+  const subs = Object.entries(tree.sub ?? {}).map(([n, f]) => { const d = filesDir(f); return rec(n, d.lba, d.size, true); });
   const rootFiles = Object.entries(tree.root ?? {}).map(([n, b]) => rec(n, alloc(b), b.length, false));
-  const uw2d = dirOf([rec('DATA', data.lba, data.size, true), rec('CRIT', crit.lba, crit.size, true), ...rootFiles]);
+  const uw2d = dirOf([rec('DATA', data.lba, data.size, true), rec('CRIT', crit.lba, crit.size, true), ...subs, ...rootFiles]);
   const uw2 = { lba: alloc(uw2d), size: uw2d.length };
   const rootd = dirOf([rec('UW2', uw2.lba, uw2.size, true)]);
   const root = { lba: alloc(rootd), size: rootd.length };

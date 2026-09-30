@@ -1,3 +1,4 @@
+import { CUTSCENE, INTRODUCTION } from '../game/cutscenes';
 import type { Game } from '../game/game';
 import { discPlayer } from '../game/player';
 import { SAVE_SLOTS, SaveError, applySave, describeSave, makeSave, parseSave } from '../game/saves';
@@ -43,14 +44,22 @@ async function slotList(game: Game, save: boolean, done: () => void): Promise<HT
 
 export class Menus {
   onCreate: () => void = () => {};
+  /** Plays cutscenes over the menu (null: no cutscene data). */
+  playCutscenes: ((ns: readonly number[]) => Promise<unknown>) | null = null;
   constructor(private readonly game: Game) {}
 
-  /** The start menu: create a character, journey onward (load), or explore as the disc's default character. */
+  /**
+   * The start menu, as the original's: the introduction, create a character, the acknowledgements, journey onward
+   * (load); plus exploring as the disc's default character.
+   */
   async showMain(): Promise<void> {
     const body = $('#menuBody'), st = el('div', { className: 'stack' });
     body.replaceChildren();
     const add = (t: string, fn: () => void) => { const b = el('button', { className: 'sbtn', onclick: fn }, t); st.append(b); return b; };
+    const play = this.playCutscenes, watch = (ns: readonly number[]) => async () => { $('#menu').hidden = true; await play!(ns); $('#menu').hidden = false; };
+    if (play) add('Introduction', watch(INTRODUCTION));
     add('Create a character', () => this.onCreate());
+    if (play) add('Acknowledgements', watch([CUTSCENE.credits]));
     let any = false;
     for (let k = 0; k < SAVE_SLOTS; k++) if (await kvGet(saveKey(k))) any = true;
     if (any) add('Journey onward', async () => {

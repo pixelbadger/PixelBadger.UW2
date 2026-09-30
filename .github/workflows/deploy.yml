@@ -1,6 +1,6 @@
 name: Deploy to GitHub Pages
 
-# Runs on every merge to main: re-runs CI, then publishes dist/ to GitHub Pages.
+# Runs on every merge to main: re-runs CI, then the real-data integration tests, then publishes dist/ to GitHub Pages.
 on:
   push:
     branches: [main]
@@ -19,8 +19,66 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
-  deploy:
+  # The gate: tests against the original disc (tests/data, `npm run test:data`). The disc is never in the repository:
+  # the repository secret UW2_DATA_URL points at a private copy (an .iso/.bin, or a .zip holding UW2/), cached between
+  # runs. Optional repository variable UW2_DATA_SHA256 pins its checksum. Without the secret the gate fails, and so
+  # the deploy does not happen.
+  data-tests:
+    name: data-tests
     needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Check the disc source is configured
+        id: src
+        env:
+          URL: ${{ secrets.UW2_DATA_URL }}
+          SHA: ${{ vars.UW2_DATA_SHA256 }}
+        run: |
+          if [ -z "$URL" ]; then
+            echo "::error::The repository secret UW2_DATA_URL is not set, so the real-data tests cannot run and the deploy is blocked. See README (CI/CD)."
+            exit 1
+          fi
+          # cache key: the pinned checksum, else a hash of the URL (never the URL itself)
+          echo "key=uw2-data-${SHA:-$(printf %s "$URL" | sha256sum | cut -c1-16)}" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: ~/.cache/uw2-data
+          key: ${{ steps.src.outputs.key }}
+      - name: Download the disc
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          URL: ${{ secrets.UW2_DATA_URL }}
+        run: |
+          mkdir -p ~/.cache/uw2-data
+          curl -fsSL --retry 4 --retry-delay 5 -o ~/.cache/uw2-data/disc "$URL"
+      - name: Verify and unpack the disc
+        env:
+          SHA: ${{ vars.UW2_DATA_SHA256 }}
+        run: |
+          f=~/.cache/uw2-data/disc
+          if [ -n "$SHA" ]; then echo "$SHA  $f" | sha256sum -c -; fi
+          if [ "$(head -c 2 "$f")" = "PK" ]; then
+            rm -rf "$RUNNER_TEMP/uw2" && mkdir -p "$RUNNER_TEMP/uw2" && unzip -q "$f" -d "$RUNNER_TEMP/uw2"
+            echo "UW2_DATA=$RUNNER_TEMP/uw2" >> "$GITHUB_ENV"
+          else
+            echo "UW2_DATA=$f" >> "$GITHUB_ENV"
+          fi
+      - name: Real-data tests
+        env:
+          UW2_DATA_REQUIRED: '1'
+        run: npm run test:data
+
+  deploy:
+    needs: [ci, data-tests]
     runs-on: ubuntu-latest
     environment:
       name: github-pages

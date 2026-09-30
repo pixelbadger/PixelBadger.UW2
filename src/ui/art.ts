@@ -3,7 +3,7 @@ import type { GameData } from '../data/gamedata';
 
 /**
  * The interface art, decoded from the disc at runtime (never embedded or redrawn): command icons, flasks, compass,
- * buttons, chains, scroll edges, panels, bodies, portraits, the 5x6 font. Anything missing is null and the UI falls
+ * buttons, chains, scroll edges, panels, bodies, portraits, the 5x6 font and the cutscene font. Anything missing is null and the UI falls
  * back to text buttons and plain panels.
  */
 export class Art {
@@ -19,6 +19,8 @@ export class Art {
   readonly charhead: (Img | null)[] | null;
   readonly genhead: (Img | null)[] | null;
   readonly font: Font | null;
+  /** FONTBIG.SYS: cutscene subtitles. */
+  readonly bigFont: Font | null;
   readonly player: DiscPlayer | null;
   /** Palette index of the stats page's label ink. */
   ink = 0;
@@ -38,6 +40,9 @@ export class Art {
     let font: Font | null = null;
     try { font = f['FONT5X6P.SYS'] ? readFont(f['FONT5X6P.SYS']) : null; } catch (e) { console.warn('FONT5X6P.SYS', e); }
     this.font = font;
+    let big: Font | null = null;
+    try { big = f['FONTBIG.SYS'] ? readFont(f['FONTBIG.SYS']) : null; } catch (e) { console.warn('FONTBIG.SYS', e); }
+    this.bigFont = big;
     this.player = readPlayer(f['PLAYER.DAT']);
     this.derive();
   }

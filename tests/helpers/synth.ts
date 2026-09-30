@@ -10,7 +10,7 @@ import { assemble, menu, call, store } from './asm';
 // A synthetic "disc": every NEEDED file plus a few OPTIONAL ones, built from scratch with the format writers. It holds
 // no game content (no copyrighted data), just enough structure to drive the engine end to end:
 //   level 0: a 9x9 room (tiles 28-36), a corridor south to a door and a move trigger that teleports back into the room,
-//            Miranda's summons (0x136, the start tile), a sword to pick up, a lever, and an NPC (whoami 1) to talk to.
+//            Miranda's summons (0x136, the start tile), a sword to pick up, a lever, a bed, and an NPC (whoami 1) to talk to.
 //   CNV.ARK slot 1: greets, offers a two-option menu, sets quest 5 on the first answer.
 
 export const ROOM = { x0: 28, x1: 36, y0: 28, y1: 36 };
@@ -19,6 +19,7 @@ export const SWORD = { x: 31, y: 31 };
 export const NPC = { x: 34, y: 34, who: 1 };
 export const DOOR = { x: 32, y: 37 };
 export const TRIGGER = { x: 32, y: 39, destX: 29, destY: 33 };
+export const BED = { x: 35, y: 29 };
 
 const u16 = (a: number[] | Uint8Array, o: number, v: number) => { a[o] = v & 255; a[o + 1] = (v >> 8) & 255; };
 
@@ -49,6 +50,7 @@ function level0(): Uint8Array {
   obj(261, { id: 0x181, q: TRIGGER.destX, own: TRIGGER.destY, z: 0 });
   obj(262, { id: 0x161, hd: 0, fx: 3, fy: 7, z: 40 }); first(33, ROOM.y1, 262); // a lever on the north wall
   obj(263, { id: 0x166, hd: 4, fx: 3, fy: 0, z: 40, isq: 1, link: 0x200 }); first(33, ROOM.y0, 263); // wall writing (block 8, 0)
+  obj(264, { id: 0x167 }); first(BED.x, BED.y, 264);                     // a bed
   return L;
 }
 
@@ -89,15 +91,15 @@ export function synthStrings(extra: Map<number, string[]> = new Map()): Uint8Arr
   return writeStrings(m);
 }
 
-/** The conversation for whoami 1 (see the file comment). */
-export function synthConversation(): Uint8Array {
+/** The conversation for whoami 1 (see the file comment); the first answer sets `quest` to `value`. */
+export function synthConversation(quest = 5, value = 1): Uint8Array {
   const fns = ['babl_menu', 'set_quest'];
   const code = assemble([
     'PUSHI 0', 'SAY_OP',
     ...store(40, 1), ...store(41, 2), ...store(42, 0),
     ...menu('babl_menu', [40]), 'PUSH_REG',
     'PUSHI 1', 'TSTEQ', 'BEQ other',
-    ...store(50, 5), ...store(51, 1), ...call('set_quest', [51, 50]),
+    ...store(50, quest), ...store(51, value), ...call('set_quest', [51, 50]),
     'PUSHI 3', 'SAY_OP', 'EXIT_OP',
     'other:', 'PUSHI 4', 'SAY_OP', 'EXIT_OP',
   ], { fns });

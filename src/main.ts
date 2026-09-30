@@ -1,6 +1,6 @@
 import './styles.css';
 import { GameData } from './data/gamedata';
-import { filesFromPicked, hasNeeded, type GameFiles } from './data/files';
+import { filesFromPicked, hasCutscenes, hasNeeded, type GameFiles } from './data/files';
 import { levelName } from './data/text';
 import { Game } from './game/game';
 import { act, talkTo, tryGet, use } from './game/interact';
@@ -14,6 +14,8 @@ import { Art } from './ui/art';
 import { Automap } from './ui/automap';
 import { CharGen } from './ui/chargen';
 import { Controls } from './ui/controls';
+import { CutsceneView } from './ui/cutscene';
+import { STARTUP } from './game/cutscenes';
 import { $, el } from './ui/dom';
 import { Hud } from './ui/hud';
 import { Menus, loadGame, saveGame } from './ui/menus';
@@ -51,8 +53,11 @@ async function start(files: GameFiles): Promise<void> {
   talk.game = game;
   hud = new Hud(game, art, talk);
   game.ui = hud;
-  const menus = new Menus(game), chargen = new CharGen(game, art);
+  const menus = new Menus(game), chargen = new CharGen(game, art), cuts = new CutsceneView(game, art);
+  hud.cuts = cuts;
   menus.onCreate = () => chargen.open();
+  if (hasCutscenes(files)) menus.playCutscenes = ns => cuts.playAll(ns);
+  hud.onVictory = () => void menus.showMain();
   const map = new Automap(game, () => hud!.say(''));
   const cycleLight = () => { renderer.lightIdx = (renderer.lightIdx + 1) % LIGHTS.length; $('#bLight').textContent = LIGHTS[renderer.lightIdx]![0]; };
   const closeText = () => ($('#scroll').hidden = true);
@@ -60,6 +65,7 @@ async function start(files: GameFiles): Promise<void> {
     toggleMap: () => map.toggle(), togglePanel: () => hud!.togglePanel(), cycleLight,
     closeOverlays: () => { closeText(); $('#opts').hidden = true; },
     talkKey: e => talk.key(e),
+    cutsKey: e => cuts.key(e),
   });
   const openTalk = talk.open.bind(talk);
   talk.open = me => { controls.reset(); openTalk(me); };
@@ -85,20 +91,24 @@ async function start(files: GameFiles): Promise<void> {
   $('#loader').hidden = true; $('#game').hidden = false;
   game.goLevel(0);
   game.setPlayer(discPlayer(D));
-  void menus.showMain();
+  void cuts.playAll(STARTUP).then(() => menus.showMain()); // the title and the introduction; skipping goes to the menu
   if (!D.crit) hud.say('Creatures need the disc’s CRIT folder: choose Forget data in Options, then the disc image again.');
   else if (!D.models || !art.panels || !art.heads) hud.say('For real furniture, interface art and character creation, choose Forget data in Options, then your disc image again.');
+  else if (!hasCutscenes(files)) hud.say('For the cutscenes, choose Forget data in Options, then your disc image again.');
 
   let last = performance.now();
   const frame = (now: number) => {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     try {
-      controls.poll();
-      update(game, dt);
-      renderer.render(game);
-      if (map.shown) map.draw();
-      hud!.drawCompass();
+      if (cuts.active) cuts.frame(dt); // the world waits
+      else {
+        controls.poll();
+        update(game, dt);
+        renderer.render(game);
+        if (map.shown) map.draw();
+        hud!.drawCompass();
+      }
     } catch (e) { showFault(e instanceof Error ? e.message : String(e)); }
     requestAnimationFrame(frame);
   };
@@ -106,7 +116,7 @@ async function start(files: GameFiles): Promise<void> {
 
   // test / debugging handle (headless browser tests drive the engine through this)
   (window as unknown as Record<string, unknown>).__uw = {
-    game, renderer, hud, art, get LV() { return game.level; }, P: game.pose, G: D, INV: game.inv,
+    game, renderer, hud, art, cuts, playCutscene: (n: number) => cuts.play(n), get LV() { return game.level; }, P: game.pose, G: D, INV: game.inv,
     saveGame: (k: number) => saveGame(game, k), loadGame: (k: number) => loadGame(game, k), openCreation: () => chargen.open(),
     goLevel: (n: number) => game.goLevel(n), teleport: (x: number, y: number) => game.teleport(x, y),
     pick: (x: number, y: number) => pick(game, x, y), use: (x: number, y: number, look?: boolean) => use(game, x, y, look), act: (x: number, y: number) => act(game, x, y),

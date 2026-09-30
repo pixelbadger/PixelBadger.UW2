@@ -64,7 +64,7 @@ describe('the synthetic disc decodes', () => {
     expect(npc?.items).toEqual([]);
     expect(lv.doors).toHaveLength(1);
     expect([...lv.triggers.values()]).toEqual([{ x: 29, y: 33, lv: 0 }]);
-    expect(lv.props.map(o => o.id).sort()).toEqual([0x161, 0x166]);
+    expect(lv.props.map(o => o.id).sort()).toEqual([0x161, 0x166, 0x167]);
   });
   it('builds the texture array and names', () => {
     expect(D.nt).toBe(8);

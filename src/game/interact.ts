@@ -7,6 +7,7 @@ import type { Game } from './game';
 import { portable, type SlotKey } from './inventory';
 import { eye, pick, type Hit } from './picking';
 import { startTalk } from './talk';
+import { sleep } from './cutscenes';
 
 // The command modes (use, look, get, talk, fight) acting on what the Avatar points at.
 
@@ -73,6 +74,10 @@ export function use(game: Game, nx: number, ny: number, look = false): void {
     o.id ^= 8; game.refreshDynamic();
     const n = nameOf(D, o.id & ~8).replace(/^an? /, '');
     game.say(n.includes('button') ? 'You press the button.' : `You ${n.includes('chain') ? 'pull' : 'flip'} the ${n}.`);
+  } else if (!look && o.id === 0x167) { // a bed
+    const E = eye(game);
+    if (Math.hypot(sp.c[0] - E[0], sp.c[2] - E[2]) > 2.3) game.say(S1(D, 107) || 'You cannot reach that.');
+    else void sleep(game);
   } else describe(game, o);
 }
 

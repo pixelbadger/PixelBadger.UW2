@@ -4,7 +4,7 @@ import { GameData } from '../../src/data/gamedata';
 import type { GameFiles } from '../../src/data/files';
 import { Game } from '../../src/game/game';
 import { eye } from '../../src/game/picking';
-import { nullUi, type LineKind } from '../../src/game/ports';
+import { nullUi, type LineKind, type UiPort } from '../../src/game/ports';
 import { closeTalk, startTalk } from '../../src/game/talk';
 import { discPlayer } from '../../src/game/player';
 
@@ -36,10 +36,10 @@ export function headlessGame(files: GameFiles, seed = 1): Game {
  * Runs conversation slot `who` to the end through the real engine session (builtins included), answering menus by
  * strategy and typing `typed` at every question. The talker is a stand-in NPC placed at the Avatar's eye.
  */
-export function runTalk(game: Game, who: number, strategy: Strategy, opts: { typed?: string; rng?: Rng; maxSteps?: number; talker?: ObjRec } = {}): TalkRun {
+export function runTalk(game: Game, who: number, strategy: Strategy, opts: { typed?: string; rng?: Rng; maxSteps?: number; talker?: ObjRec; ui?: Partial<UiPort> } = {}): TalkRun {
   const rng = opts.rng ?? seededRng(who * 7919 + strategy.length);
   const lines: TalkRun['lines'] = [];
-  const ui = nullUi();
+  const ui: UiPort = { ...nullUi(), ...opts.ui };
   ui.talk.line = (kind, text) => lines.push({ kind, text });
   game.ui = ui;
   const o: ObjRec = opts.talker ?? {
